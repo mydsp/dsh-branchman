@@ -56,9 +56,15 @@ index.js   client.js   package.json   cordis.patch.yml
 在仓库里改代码后，用同步脚本推到你 profile 里再重启：
 
 ```powershell
-pwsh -File scripts\deploy-local.ps1            # 默认推 desktop profile
-pwsh -File scripts\deploy-local.ps1 -Profile other -Restart
+pwsh -File scripts\deploy-local.ps1                          # 同步 desktop profile
+pwsh -File scripts\deploy-local.ps1 -Profile other           # 指定 profile
+pwsh -File scripts\deploy-local.ps1 -WithPatch               # 连 cordis.patch.yml 一起覆盖
 ```
+
+脚本只同步 `index.js` / `client.js` / `package.json`（**不动你本机的 `cordis.patch.yml`**，
+那是你的配置），同步前备份到 `$DSH_HOME\backups\dsh-branchman-<时间戳>\`，
+同步后对两个源文件跑 `node --check` —— 坏文件不会被留在 profile 里。
+同步完仍需**完全退出 DSH 再启动**（脚本不会替你重启应用）。
 
 ---
 
