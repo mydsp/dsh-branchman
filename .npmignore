@@ -1,0 +1,5 @@
+# `files` in package.json already whitelists what ships; these are local scratch
+# artefacts that happen to live inside those directories.
+docs/overview-preview.png
+docs/_preview.svg
+test/.tmp/
