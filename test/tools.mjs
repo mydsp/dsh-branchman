@@ -69,7 +69,7 @@ const ctx = {
 }
 
 const mod = await import(MOD)
-await mod.default(ctx, { dataFile: TREE, defaultRoot: REPO, gitPath: GIT })
+await mod.apply(ctx, { dataFile: TREE, defaultRoot: REPO, gitPath: GIT })
 console.log(`registered tools: ${[...tools.keys()].join(', ')}\n`)
 
 // ── 0. 写入不变量：并发 save 不得撞同一个临时文件 ──────────────────────────

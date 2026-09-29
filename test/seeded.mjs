@@ -136,7 +136,7 @@ const ctx = {
 }
 
 const mod = await import(pathToFileURL(join(PKG, 'index.js')).href)
-await mod.default(ctx, { dataFile: TREE, defaultRoot: SCRATCH, gitPath: GIT })
+await mod.apply(ctx, { dataFile: TREE, defaultRoot: SCRATCH, gitPath: GIT })
 check('五个工具全部注册', tools.size === 5, [...tools.keys()].join(','))
 
 // ── fork with a source conversation ───────────────────────────────────────

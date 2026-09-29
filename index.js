@@ -30,7 +30,24 @@ try { ({ defineTool } = await import('@deepseek-ai/dsh-tools')) } catch {}
 let buildForkSeed = null
 try { ({ buildForkSeed } = await import('@deepseek-ai/dsh-session/fork')) } catch {}
 
-// branchman tools (see apply.inject below)
+// Config schema. Declaring `Config` is what lets the host validate a row's
+// `config` and lets users tune the plugin from cordis.patch.yml. Guarded like
+// the peer imports above: a host that cannot resolve schemastery gets no schema,
+// and the plugin then reads the raw config exactly as it did before.
+let Schema = null
+try {
+  const mod = await import('schemastery')
+  const candidate = mod.default ?? mod
+  if (typeof candidate?.object === 'function') Schema = candidate
+} catch { /* no schema — config is read as-is */ }
+
+export const Config = Schema === null ? undefined : Schema.object({
+  dataFile: Schema.string().default(''),
+  defaultRoot: Schema.string().default(''),
+  gitPath: Schema.string().default('git'),
+})
+
+// branchman tools (registered inside apply; see the `inject` export at the end)
 
 const MAX_NAME = 60
 
@@ -480,7 +497,7 @@ function readBody(req, limit = 64 * 1024) {
   })
 }
 
-const apply = async (ctx, config) => {
+export async function apply(ctx, config) {
   const store = new TreeStore(config?.dataFile)
   // Config normalisation. A published install must not depend on any local
   // path: `git` resolves from PATH and the repository root falls back to the
@@ -514,45 +531,57 @@ const apply = async (ctx, config) => {
     return ctx.tools.register(defineTool(definition))
   }
 
+  // Every registration lives inside a ctx.effect that returns its cleanup, so
+  // unloading the plugin — or a profile patch replacing this row — removes the
+  // tools instead of leaving them behind on a dead context.
+  ctx.effect(() => {
+    const disposers = [
   tool({
-    name: 'branch_fork',
-    description: 'Open a new engineering direction from the current conversation: creates a git worktree (isolated workspace on its own branch) and a child session bound to it. Use when the user wants to try an alternative approach without disturbing the main line. The main repo must have no uncommitted changes.',
-    parameters: {
-      name: { type: 'string', required: true, description: '走向名，如 走向A-激进方案。也是目录与分支名。' },
-      root: { type: 'string', description: '仓库根目录。默认用配置的 defaultRoot。' },
-      from: { type: 'string', description: '起点 ref（默认 main）。' },
-    },
-    output: TOOL_OUTPUT,
-    execute: args => doFork(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-  })
-  tool({
-    name: 'branch_tree',
-    description: 'Show the branch tree of engineering directions: which direction forked from which, worktree paths, branches and activity. Zero cost — read from local state.',
-    parameters: {},
-    output: TOOL_OUTPUT,
-    execute: () => doTree(store).then(value => JSON.stringify(value, null, 2)),
-  })
-  tool({
-    name: 'branch_status',
-    description: 'Per-direction git status vs the main line: commits ahead, behind, uncommitted files. Run before deciding to merge or drop a direction.',
-    parameters: { root: { type: 'string', description: '仓库根目录（默认配置值）。' } },
-    output: TOOL_OUTPUT,
-    execute: args => doStatus(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-  })
-  tool({
-    name: 'branch_merge',
-    description: 'Merge a finished direction back into the main line. The direction must have no uncommitted changes in its worktree.',
-    parameters: { name: { type: 'string', required: true, description: '走向名。' } },
-    output: TOOL_OUTPUT,
-    execute: args => doMerge(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-  })
-  tool({
-    name: 'branch_drop',
-    description: 'Tear down a direction: remove its worktree, delete its branch, mark it dropped in the tree (kept for audit).',
-    parameters: { name: { type: 'string', required: true, description: '走向名。' } },
-    output: TOOL_OUTPUT,
-    execute: args => doDrop(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-  })
+      name: 'branch_fork',
+      description: 'Open a new engineering direction from the current conversation: creates a git worktree (isolated workspace on its own branch) and a child session bound to it. Use when the user wants to try an alternative approach without disturbing the main line. The main repo must have no uncommitted changes.',
+      parameters: {
+        name: { type: 'string', required: true, description: '走向名，如 走向A-激进方案。也是目录与分支名。' },
+        root: { type: 'string', description: '仓库根目录。默认用配置的 defaultRoot。' },
+        from: { type: 'string', description: '起点 ref（默认 main）。' },
+      },
+      output: TOOL_OUTPUT,
+      execute: args => doFork(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+    }),
+    tool({
+      name: 'branch_tree',
+      description: 'Show the branch tree of engineering directions: which direction forked from which, worktree paths, branches and activity. Zero cost — read from local state.',
+      parameters: {},
+      output: TOOL_OUTPUT,
+      execute: () => doTree(store).then(value => JSON.stringify(value, null, 2)),
+    }),
+    tool({
+      name: 'branch_status',
+      description: 'Per-direction git status vs the main line: commits ahead, behind, uncommitted files. Run before deciding to merge or drop a direction.',
+      parameters: { root: { type: 'string', description: '仓库根目录（默认配置值）。' } },
+      output: TOOL_OUTPUT,
+      execute: args => doStatus(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+    }),
+    tool({
+      name: 'branch_merge',
+      description: 'Merge a finished direction back into the main line. The direction must have no uncommitted changes in its worktree.',
+      parameters: { name: { type: 'string', required: true, description: '走向名。' } },
+      output: TOOL_OUTPUT,
+      execute: args => doMerge(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+    }),
+    tool({
+      name: 'branch_drop',
+      description: 'Tear down a direction: remove its worktree, delete its branch, mark it dropped in the tree (kept for audit).',
+      parameters: { name: { type: 'string', required: true, description: '走向名。' } },
+      output: TOOL_OUTPUT,
+      execute: args => doDrop(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+    }),
+    ]
+    return () => {
+      for (const dispose of disposers) {
+        try { if (typeof dispose === 'function') dispose() } catch { /* context already gone */ }
+      }
+    }
+  }, 'branchman: agent tools')
 
   // ── passive tree projection (bounded: metadata only) ──
   ctx.on('session/created', session => {
@@ -590,7 +619,7 @@ const apply = async (ctx, config) => {
   const sendJson = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)) }
 
   ctx.effect(() => {
-    ctx.webServer.register({
+    const disposeApi = ctx.webServer.register({
       kind: 'prefix', path: '/branchman/api',
       handler: async (req, res) => {
         if (!hostOk(req)) return sendJson(res, 403, { error: 'forbidden' })
@@ -637,10 +666,15 @@ const apply = async (ctx, config) => {
         return sendJson(res, 404, { error: 'not found' })
       },
     })
-    ctx.webServer.register({
+    const disposePage = ctx.webServer.register({
       kind: 'exact', path: '/branchman/',
       handler: (_req, res) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page()) },
     })
+    return () => {
+      for (const dispose of [disposeApi, disposePage]) {
+        try { if (typeof dispose === 'function') dispose() } catch { /* context already gone */ }
+      }
+    }
   }, 'branchman: web routes')
 }
 
@@ -679,8 +713,10 @@ fetch('/branchman/api/tree').then(r=>r.json()).then(d=>{
 </script></body></html>`
 }
 
-apply.inject = ['webServer', 'sessions', 'tools']
-export default apply
+// host-plugin.md: a Host plugin exports `apply` and, when it needs services,
+// `inject` — declared, not assigned onto the function object. Services that are
+// optional at runtime are resolved separately through ctx.inject inside apply.
+export const inject = ['webServer', 'sessions', 'tools']
 
 // Exported for the offline suites: the store's write invariant (concurrent
 // saves must never collide on one temp path) is the one thing that cannot be

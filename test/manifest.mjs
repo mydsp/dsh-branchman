@@ -82,5 +82,45 @@ check('client bundle 用 __ModuleLoader__.load 注册', clientSrc.includes('__Mo
 const patch = pkg.dsh?.bundle?.patch
 check('dsh.bundle.patch 指向的文件存在', patch !== undefined && existsSync(join(SRC, patch)), String(patch))
 
+// ── Host plugin export form (host-plugin.md): `export function apply` with
+//    optional `export const inject` / `export const Config`, or a default-
+//    exported service class. The two forms must not be mixed, and an assigned
+//    `apply.inject = [...]` is not the declared form.
+const hostSrc = await readFile(join(SRC, pkg.main ?? 'index.js'), 'utf8')
+check('宿主半边用 export function apply（不是默认导出）',
+  /export\s+(async\s+)?function\s+apply\s*\(/.test(hostSrc) && !/export\s+default\s+apply/.test(hostSrc))
+check('宿主半边用 export const inject 声明依赖服务',
+  /export\s+const\s+inject\s*=\s*\[/.test(hostSrc) && !/\bapply\.inject\s*=/.test(hostSrc))
+check('宿主半边声明了 export const Config（schema 可选但需显式导出）',
+  /export\s+const\s+Config\s*=/.test(hostSrc))
+// Every registration inside apply must be owned by an effect that can clean up:
+// the agent tools and the web routes are two separate effects, and a missing
+// wrapper (or a wrapper without a returned cleanup) leaks on unload.
+const effectBlocks = [...hostSrc.matchAll(/ctx\.effect\(\(\)\s*=>\s*\{/g)].length
+const returnedCleanups = [...hostSrc.matchAll(/ctx\.effect\(\(\)\s*=>\s*\{[\s\S]*?return\s+\(\)\s*=>/g)].length
+check(`apply 内至少两处 ctx.effect（工具 + web 路由），实为 ${effectBlocks}`, effectBlocks >= 2, String(effectBlocks))
+check(`每处 ctx.effect 都返回清理函数（${returnedCleanups}/${effectBlocks}）`,
+  effectBlocks > 0 && returnedCleanups === effectBlocks, `${returnedCleanups}/${effectBlocks}`)
+check('工具注册被 ctx.effect 包住并把 disposer 收进数组',
+  /ctx\.effect\(\(\)\s*=>\s*\{\s*const disposers = \[[\s\S]*?tool\(\{/.test(hostSrc))
+check('web 路由的两个 disposer 都被保留',
+  /const disposeApi = ctx\.webServer\.register\(/.test(hostSrc) && /const disposePage = ctx\.webServer\.register\(/.test(hostSrc))
+
+// ── display metadata the Plugin Manager reads without activating the plugin ─
+check('清单声明了 icon', typeof pkg.icon === 'string' && existsSync(join(SRC, pkg.icon)), String(pkg.icon))
+for (const file of ['locale/zh.json', 'locale/en.json']) {
+  const exists = existsSync(join(SRC, file))
+  check(`${file} 存在（插件卡片的标题与描述）`, exists)
+  if (!exists) continue
+  const meta = JSON.parse(await readFile(join(SRC, file), 'utf8'))?.meta
+  check(`${file} 的 meta.title/description 非空`,
+    typeof meta?.title === 'string' && meta.title !== '' && typeof meta?.description === 'string' && meta.description !== '')
+}
+check('exports 暴露 locale 与 package.json（宿主按需读取元数据）',
+  pkg.exports?.['./locale/*.json'] === './locale/*.json' || pkg.exports?.['./locale/*.json'] !== undefined)
+const files = Array.isArray(pkg.files) ? pkg.files : []
+check('files 白名单含 locale 与 icon（否则发布件里没有元数据）',
+  files.some(f => f.startsWith('locale')) && files.includes('icon.svg'), files.join(','))
+
 console.log(`\n================  ${pass} passed, ${fail} failed${skip > 0 ? `, ${skip} skipped` : ''}  ================`)
 process.exit(fail === 0 ? 0 : 1)
