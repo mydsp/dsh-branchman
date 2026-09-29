@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Branch Workspaces · Branchman",
+    "description": "Open an engineering direction as one atom: a git worktree plus a child session that inherits the conversation, wired into a tree you can see."
+  }
+}

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"
+     fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+     role="img" aria-label="Branchman">
+  <!-- main line -->
+  <circle cx="6" cy="5" r="2.2"/>
+  <circle cx="6" cy="19" r="2.2"/>
+  <path d="M6 7.2v9.6"/>
+  <!-- one direction branching off it -->
+  <path d="M8.2 5h4.1a3.2 3.2 0 0 1 3.2 3.2v.9"/>
+  <circle cx="15.5" cy="11.3" r="2.2"/>
+</svg>

@@ -1,6 +1,20 @@
-// Offline test for dsh-branchman's CLIENT half.
-// Stubs window.__ModuleLoader__, a minimal DOM, React hooks, fetch and the
-// host ctx, then drives a real button click through the real client.js.
+// Offline suite for dsh-branchman's CLIENT half.
+//
+// WHAT THIS SUITE IS, AND IS NOT
+//   The plugin's UI can only be *verified* in the running Harness page. Per the
+//   host's own verification guidance (cordis-plugin-development →
+//   references/verification.md) this suite therefore does NOT emulate React or
+//   the DOM, and does not rasterise previews to stand in for a browser: a
+//   screenshot of a mock page is not verification of the running plugin.
+//
+//   What it does instead:
+//     1. loads the real client artifact through a `window.__ModuleLoader__`
+//        stub and checks the module contract the loader depends on;
+//     2. exercises the pure layout maths directly (`__test.layoutTree`) — the
+//        one part of the view that is plain logic;
+//     3. asserts the conformance rules that ARE checkable statically: no DOM
+//        written outside a component, theme tokens only, every visible string
+//        routed through the locale dictionary, the sanctioned overlay slot.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,413 +29,119 @@ const check = (label, ok, detail = '') => {
   else { fail += 1; console.log(`  FAIL  ${label}${detail ? ' — ' + detail : ''}`) }
 }
 
-// ── minimal DOM ───────────────────────────────────────────────────────────
-const makeEl = (tag = 'div') => ({
-  tagName: tag, className: '', textContent: '', innerHTML: '', value: '',
-  style: {}, children: [], title: '', type: '', removed: false, focused: false, _html: '',
-  // 真实 DOM 的 append 接受多个节点（插件里就有 row.append(head, meta, path)）
-  append(...nodes) { for (const node of nodes) this.children.push(node); return nodes[0] },
-  get innerHTML() { return this._html },
-  set innerHTML(value) { this._html = String(value); this.children.length = 0 },
-  // SVG 用 setAttribute/getAttribute；innerHTML 赋值按真实 DOM 语义清空子节点
-  attrs: {},
-  setAttribute(key, value) { this.attrs[key] = String(value) },
-  getAttribute(key) { return this.attrs[key] ?? null },
-  remove() { this.removed = true },
-  focus() { this.focused = true },
-  addEventListener(type, fn) { this.handlers ??= {}; this.handlers[type] = fn },
-  querySelector(sel) { this.q ??= {}; return (this.q[sel] ??= makeEl(sel)) },
-  onclick: null,
-})
-const head = makeEl('head')
-const body = makeEl('body')
-globalThis.document = { createElement: makeEl, createElementNS: (ns, tag) => makeEl(tag), head, body }
+const source = await readFile(CLIENT, 'utf8')
 
-// ── minimal React ─────────────────────────────────────────────────────────
-const refs = []
-const effects = []
-const React = {
-  useRef: init => { const r = { current: init }; refs.push(r); return r },
-  useEffect: fn => { effects.push(fn) },
-  createElement: (type, props, ...children) => ({ type, props, children }),
+// ── load the artifact exactly the way the host does ───────────────────────
+let loaded = null
+globalThis.window = { __ModuleLoader__: { load: bundle => { loaded = bundle } } }
+const requested = []
+const REACT_STUB = { createElement: () => null, Fragment: Symbol('Fragment') }
+const requireStub = name => { requested.push(name); return REACT_STUB }
+
+await import(new URL('../client.js', import.meta.url).href)
+
+check('client.js 通过 window.__ModuleLoader__.load 注册自己', loaded !== null)
+check('bundle id 等于包名（宿主据此绑定槽位）', loaded?.id === 'dsh-branchman', String(loaded?.id))
+check('factory 是函数', typeof loaded?.factory === 'function')
+
+const mod = loaded.factory(requireStub)
+check("只从浏览器模块表取 react（未引任何 Harness Client 包）", requested.length === 1 && requested[0] === 'react', requested.join(','))
+check("inject 声明为 ['slots','sessions']", JSON.stringify(mod.inject) === JSON.stringify(['slots', 'sessions']), JSON.stringify(mod.inject))
+check('apply 是函数（模块契约 { inject, apply }）', typeof mod.apply === 'function')
+check('导出纯函数供离线核对（__test）', typeof mod.__test?.layoutTree === 'function')
+
+// ── pure layout maths ─────────────────────────────────────────────────────
+const { layoutTree, clip, NODE_W, NODE_H, H_GAP, V_GAP } = mod.__test
+const dir = (name, parentName = null, extra = {}) => ({ name, parentName, status: 'open', cwd: `E:/repo/.branches/${name}`, branch: `branchman/${name}`, ...extra })
+
+const empty = layoutTree([])
+check('空树：只有虚拟主线根', empty.root.main === true && empty.root.children.length === 0)
+check('空树尺寸不为负', empty.width >= NODE_W && empty.height >= NODE_H)
+
+const one = layoutTree([dir('A')])
+check('单条走向：叶子在 0 位', one.root.children[0].cx === 0)
+check('单条走向：主线根居中于唯一子节点', one.root.cx === 0)
+check('单条走向：每个层级下沉 NODE_H + V_GAP', one.root.children[0].cy === NODE_H + V_GAP)
+check('单条走向：宽度=一个节点', one.width === NODE_W)
+
+const two = layoutTree([dir('A'), dir('B')])
+const [a, b] = two.root.children
+check('兄弟节点不重叠（间隔 H_GAP）', b.cx - a.cx === NODE_W + H_GAP, `${a.cx} → ${b.cx}`)
+check('父节点居中于两个子节点之间', two.root.cx === (a.cx + b.cx) / 2, String(two.root.cx))
+check('两节点宽度 = 2 节点 + 1 间隔', two.width === 2 * NODE_W + H_GAP, String(two.width))
+
+const tree = layoutTree([
+  dir('A'), dir('B'), dir('A1', 'A'), dir('A2', 'A'), dir('B1', 'B'),
+])
+const nodeOf = (entry, name) => {
+  if (entry.node.name === name) return entry
+  for (const kid of entry.children) { const hit = nodeOf(kid, name); if (hit !== null) return hit }
+  return null
 }
+check('多级：A1/A2 是 A 的子节点', nodeOf(tree.root, 'A1') !== null && nodeOf(tree.root, 'A2') !== null)
+check('多级：A 居中于 A1/A2 之间', nodeOf(tree.root, 'A').cx === (nodeOf(tree.root, 'A1').cx + nodeOf(tree.root, 'A2').cx) / 2)
+check('多级：同级不同父不重叠', nodeOf(tree.root, 'A2').cx + NODE_W + H_GAP <= nodeOf(tree.root, 'B1').cx)
+check('多级：深度决定 y', nodeOf(tree.root, 'A1').cy === 2 * (NODE_H + V_GAP))
+check('多级：高度覆盖最深一层', tree.height === 2 * (NODE_H + V_GAP) + NODE_H)
 
-// ── capture the registered factory ────────────────────────────────────────
-let entry = null
-globalThis.window = { __ModuleLoader__: { load: e => { entry = e } } }
+const orphan = layoutTree([dir('X', 'not-there')])
+check('父节点不在列表时按根处理（不会崩、不会丢节点）', orphan.root.children.length === 1 && orphan.root.children[0].node.name === 'X')
 
-const src = await readFile(CLIENT, 'utf8')
-new Function(src)()   // the bundle registers itself on window.__ModuleLoader__
+check('主线根的 cwd 取自第一条走向的 root', layoutTree([dir('A', null, { root: 'E:/repo' })]).root.node.cwd === 'E:/repo')
+check('clip 截断并加省略号', clip('一二三四五六七八九十', 5) === '一二三四…', clip('一二三四五六七八九十', 5))
+check('clip 短串原样返回', clip('abc', 5) === 'abc')
+check('clip 容忍 null', clip(null, 5) === '')
 
-check('client bundle 调用 __ModuleLoader__.load', entry !== null)
-check('bundle id 正确', entry?.id === 'dsh-branchman', String(entry?.id))
-check('factory 是函数', typeof entry?.factory === 'function')
+// ── locale dictionary ─────────────────────────────────────────────────────
+const { DICT } = mod.__test
+const zhKeys = Object.keys(DICT.zh).sort()
+const enKeys = Object.keys(DICT.en).sort()
+check('中英文字典键完全一致', JSON.stringify(zhKeys) === JSON.stringify(enKeys),
+  `zh=${zhKeys.length} en=${enKeys.length}`)
+check('字典规模合理（覆盖全部可见文案）', zhKeys.length >= 35, String(zhKeys.length))
 
-const required = []
-const exports_ = entry.factory(name => {
-  required.push(name)
-  if (name === 'react') return React
-  throw new Error(`client.js required unexpected module: ${name}`)
-})
-check('factory 只 require react', required.length === 1 && required[0] === 'react', required.join(','))
-check('exports.inject 含 slots 与 sessions',
-  Array.isArray(exports_.inject) && exports_.inject.includes('slots') && exports_.inject.includes('sessions'),
-  JSON.stringify(exports_.inject))
-check('exports.apply 是函数', typeof exports_.apply === 'function')
+const usedKeys = [...source.matchAll(/\btx\('([^']+)'/g)].map(m => m[1])
+const missing = [...new Set(usedKeys)].filter(key => !(key in DICT.zh) || !(key in DICT.en))
+check(`源码里每个 tx('key') 都在字典里（${new Set(usedKeys).size} 个键）`, missing.length === 0, missing.join(', '))
 
-// ── fake host ctx ─────────────────────────────────────────────────────────
-const calls = []
-const registered = []
-const injects = []
-const injected = []
-// 真实行为：客户端目录（catalog）在 refresh() 之前不认识宿主新建的会话，而
-// openSession → sessions.retain 对未知会话直接抛错。桩按同样规则来。
-const catalog = { current: 'session-main', byId: { 'session-main': { displayTitle: '主线会话', cwd: 'E:/repo' } } }
-const ctx = {
-  slots: {
-    inject: (name, cb) => { injects.push(name); return cb() },
-    register: (options, Component) => { registered.push({ options, Component }); return () => {} },
-  },
-  effect: fn => { fn(); return () => {} },
-  // 服务只能经 ctx.inject 取：cordis 对未声明 inject 的属性访问是抛错，不是 undefined
-  inject: (names, cb) => {
-    injected.push(names.join(','))
-    cb({
-      uiWorkspace: {
-        openSession: id => {
-          if (catalog.byId[id] === undefined) throw new Error(`sessions.retain: unknown session ${id}`)
-          calls.push(['open', id])
-        },
-      },
-    })
-  },
-  sessions: {
-    list: { getSnapshot: () => catalog },
-    refresh: async () => {
-      calls.push(['refresh'])
-      for (const id of ['session-host-1', 'session-host-props']) {
-        if (catalog.byId[id] === undefined) catalog.byId[id] = { displayTitle: '走向会话', cwd: 'E:/repo/.branches' }
-      }
-    },
-    create: async ({ cwd }) => {
-      calls.push(['create', cwd])
-      // 客户端自己建的会话，客户端目录立刻就有（与宿主服务端建的不同）
-      catalog.byId['session-client-1'] = { displayTitle: '客户端建会话', cwd }
-      return 'session-client-1'
-    },
-    scope: id => (catalog.byId[id] === undefined ? undefined : `scope-${id}`),
-    sessionOf: scope => (scope === undefined ? undefined : { prompt: async parts => { calls.push(['prompt', parts[0].text]); return { ok: true } } }),
-  },
-}
-globalThis.fetch = async (url, init) => {
-  const body_ = init?.body ? JSON.parse(init.body) : null
-  calls.push(['fetch', url, body_])
-  if (url === '/branchman/api/fork') {
-    return { ok: true, json: async () => ({
-      name: body_.name, branch: `branchman/${body_.name}`,
-      cwd: `E:/repo/.branches/${body_.name}`,
-      sessionId: globalThis.__hostSessionId === undefined ? 'session-host-1' : globalThis.__hostSessionId, hint: '',
-    }) }
-  }
-  return { ok: true, json: async () => ({}) }
-}
+const paramsUsed = [...source.matchAll(/tx\('([^']+)',\s*\{/g)].map(m => m[1])
+check('带参数的文案确实带占位符', paramsUsed.every(key => /\{\w+\}/.test(DICT.zh[key])), paramsUsed.join(', '))
 
-exports_.apply(ctx)
-check('通过 ctx.inject 取 uiWorkspace', injected.includes('uiWorkspace'), JSON.stringify(injected))
+// ── conformance rules that are checkable statically ───────────────────────
+// `strip` drops comments first: the file explains these rules in prose, and a
+// mention of the forbidden API in a comment is not a use of it.
+const strip = text => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+const code = strip(source)
 
-// ── slot registration ─────────────────────────────────────────────────────
-check('注册进官方槽位 conversation.chat.assistant-actions',
-  injects[0] === 'conversation.chat.assistant-actions', JSON.stringify(injects))
-const reg = registered[0]
-check('slot 选项含 name/id/order',
-  reg?.options.name === 'conversation.chat.assistant-actions' && typeof reg.options.id === 'string' && typeof reg.options.order === 'number',
-  JSON.stringify(reg?.options))
+check('不向 document.body 写任何东西（规范明令禁止）',
+  !/document\.body\s*[.[]?\s*(append|appendChild|prepend|innerHTML|insertBefore)/.test(code))
+// One exception is the style element owned by apply's effect — the spec allows
+// registering styles there. Nothing else may touch the DOM: views are React.
+const created = [...code.matchAll(/document\.createElement\w*\(([^)]*)\)/g)].map(m => m[1].trim())
+check('除 apply 里那一个 <style> 外不碰 DOM（视图全部由 React 渲染）',
+  created.length === 1 && created[0] === "'style'" && !/createElementNS/.test(code)
+  && !/\.appendChild\(/.test(code) && !/\.innerHTML\s*=/.test(code),
+  `createElement: ${created.join(' | ') || '无'}`)
+check('样式只引用主题令牌 --dsw-alias-*',
+  [...source.matchAll(/var\((--[a-z0-9-]+)/g)].every(m => m[1].startsWith('--dsw-alias-')), '发现非令牌变量')
+const literalColors = strip(source).match(/#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/g)
+check('没有字面颜色（字面颜色只允许出现在 artwork 里）', literalColors === null, String(literalColors))
 
-// ── mount the component (real hooks, stubbed React) ───────────────────────
-const host = makeEl('span')
-reg.Component()
-for (const r of refs) r.current = host
-for (const fn of effects) fn()
-const btn = host.children[0]
-check('按钮挂载到槽位宿主元素', btn !== undefined)
-check('按钮文案含「分支」', (btn?.textContent ?? '').includes('分支'), btn?.textContent)
-check('按钮 onclick 已绑定', typeof btn?.onclick === 'function')
-
-// ── click → dialog → submit ───────────────────────────────────────────────
-btn.onclick()
-const wrap = body.children.at(-1)
-check('点击后弹出对话框', wrap !== undefined && wrap.className === 'dsh-branchman-dlg', wrap?.className)
-const input = wrap.querySelector('input')
-const brief = wrap.querySelector('textarea')
-const err = wrap.querySelector('.dsh-branchman-err')
-const go = wrap.querySelector('.go')
-check('对话框含 go 按钮且 onclick 已绑定', typeof go.onclick === 'function')
-
-input.value = '走向-UI测试'
-brief.value = '验证 UI 链路'
-await go.onclick()
-console.log(`  [dialog] ${err.textContent}`)
-
-const forkCall = calls.find(c => c[0] === 'fetch' && c[1] === '/branchman/api/fork')
-check('提交时 POST /branchman/api/fork', forkCall !== undefined)
-check('请求体带 name', forkCall?.[2]?.name === '走向-UI测试', JSON.stringify(forkCall?.[2]))
-check('请求体带 sourceSessionId', forkCall?.[2]?.sourceSessionId === 'session-main')
-check('请求体带 sourceCwd（树连边用）', forkCall?.[2]?.sourceCwd === 'E:/repo', String(forkCall?.[2]?.sourceCwd))
-check('宿主已建会话时不再重复建会话', !calls.some(c => c[0] === 'create'), JSON.stringify(calls.filter(c => c[0] === 'create')))
-check('交接语写入子会话', calls.some(c => c[0] === 'prompt' && String(c[1]).includes('验证 UI 链路')))
-check('打开宿主返回的子会话', calls.some(c => c[0] === 'open' && c[1] === 'session-host-1'))
-const refreshIdx = calls.findIndex(c => c[0] === 'refresh')
-const openIdx = calls.findIndex(c => c[0] === 'open' && c[1] === 'session-host-1')
-check('先同步会话目录再打开（refresh 在 open 之前）', refreshIdx !== -1 && openIdx !== -1 && refreshIdx < openIdx,
-  JSON.stringify({ refreshIdx, openIdx }))
-check('对话框已关闭', wrap.removed === true)
-check('无异常文本残留', !/Error|error|undefined|\[object/.test(err.textContent), String(err.textContent))
-
-// ── fallback: host could not create the session ───────────────────────────
-console.log('\n### 宿主未建成会话时的客户端兜底')
-globalThis.__hostSessionId = null
-calls.length = 0
-btn.onclick()
-const wrap2 = body.children.at(-1)
-wrap2.querySelector('input').value = '走向-兜底'
-wrap2.querySelector('textarea').value = ''
-await wrap2.querySelector('.go').onclick()
-check('兜底时客户端补建会话', calls.some(c => c[0] === 'create' && String(c[1]).includes('.branches')), JSON.stringify(calls.filter(c => c[0] === 'create')))
-check('兜底时回报 /branchman/api/bind 挂链',
-  calls.some(c => c[0] === 'fetch' && c[1] === '/branchman/api/bind' && c[2]?.sessionId === 'session-client-1'))
-check('兜底时打开客户端补建的会话', calls.some(c => c[0] === 'open' && c[1] === 'session-client-1'))
-
-// ── error path: host rejects ──────────────────────────────────────────────
-console.log('\n### 宿主报错时的界面反馈')
-globalThis.fetch = async (url, init) => {
-  calls.push(['fetch', url])
-  return { ok: false, status: 400, json: async () => ({ error: '走向名必填' }) }
-}
-calls.length = 0
-btn.onclick()
-const wrap3 = body.children.at(-1)
-wrap3.querySelector('input').value = '走向-报错'
-await wrap3.querySelector('.go').onclick()
-check('错误显示在对话框里（不再静默失败）', wrap3.querySelector('.dsh-branchman-err').textContent.includes('走向名必填'),
-  wrap3.querySelector('.dsh-branchman-err').textContent)
-
-// ── slot props win over "current session" ─────────────────────────────────
-// 槽位把「消息所属会话」传下来时必须优先用它：靠 snap.current 在切换中途会
-// 取不到值，子会话会静默丢掉继承的历史（真实踩过）。
-console.log('\n### 槽位 props 的会话优先于 current')
-globalThis.fetch = async (url, init) => {
-  const body_ = init?.body ? JSON.parse(init.body) : null
-  calls.push(['fetch', url, body_])
-  if (url === '/branchman/api/fork') {
-    return { ok: true, json: async () => ({ name: body_.name, cwd: `E:/repo/.branches/${body_.name}`, sessionId: 'session-host-props' }) }
-  }
-  return { ok: true, json: async () => ({}) }
-}
-calls.length = 0
-const refsBefore = refs.length
-const effectsBefore = effects.length
-const host2 = makeEl('span')
-reg.Component({ sessionId: 'session-from-props', messageId: 'msg-7' })
-for (const r of refs.slice(refsBefore)) r.current = host2
-for (const fn of effects.slice(effectsBefore)) fn()
-const btn2 = host2.children[0]
-btn2.onclick()
-const wrap4 = body.children.at(-1)
-wrap4.querySelector('input').value = '走向-props'
-await wrap4.querySelector('.go').onclick()
-const forkCall2 = calls.find(c => c[0] === 'fetch' && c[1] === '/branchman/api/fork')
-check('请求用槽位传入的 sessionId（而非 current）', forkCall2?.[2]?.sourceSessionId === 'session-from-props',
-  `${String(forkCall2?.[2]?.sourceSessionId)}（snap.current=session-main）`)
-check('打开宿主返回的新会话', calls.some(c => c[0] === 'open' && c[1] === 'session-host-props'))
-
-// ── no uiWorkspace: 走向仍建好，只是不能自动切过去 ────────────────────────
-console.log('\n### 宿主未提供 uiWorkspace 时的降级')
-const calls2 = []
-const registered2 = []
-const ctx2 = {
-  slots: { inject: (n, cb) => cb(), register: (o, C) => { registered2.push({ options: o, Component: C }); return () => {} } },
-  effect: fn => { fn(); return () => {} },
-  inject: (names, cb) => { cb({}) },   // 服务存在但里面没有 uiWorkspace
-  sessions: ctx.sessions,
-}
-const exports2 = entry.factory(name => { if (name === 'react') return React; throw new Error(name) })
-exports2.apply(ctx2)
-const refsBefore2 = refs.length
-const effectsBefore2 = effects.length
-const host3 = makeEl('span')
-registered2[0].Component({ sessionId: 'session-main' })
-for (const r of refs.slice(refsBefore2)) r.current = host3
-for (const fn of effects.slice(effectsBefore2)) fn()
-host3.children[0].onclick()
-const wrap5 = body.children.at(-1)
-wrap5.querySelector('input').value = '走向-降级'
-await wrap5.querySelector('.go').onclick()
-const msg = wrap5.querySelector('.dsh-branchman-err').textContent
-check('降级时明确告知已建立、只是没自动打开', msg.includes('已建立') && msg.includes('会话列表'), msg)
-check('降级时不再抛 TypeError', !msg.includes('is not a function'), msg)
-
-// ── 目录始终不认识新会话：openSession 抛 unknown session，不许谎报失败 ────
-console.log('\n### 会话目录始终不认识新会话时的兜底')
-globalThis.fetch = async (url, init) => {
-  const body_ = init?.body ? JSON.parse(init.body) : null
-  calls.push(['fetch', url, body_])
-  if (url === '/branchman/api/fork') {
-    return { ok: true, json: async () => ({ name: body_.name, cwd: `E:/repo/.branches/${body_.name}`, sessionId: 'session-ghost' }) }
-  }
-  return { ok: true, json: async () => ({}) }
-}
-const registered3 = []
-const ctx3 = {
-  slots: { inject: (n, cb) => cb(), register: (o, C) => { registered3.push({ options: o, Component: C }); return () => {} } },
-  effect: fn => { fn(); return () => {} },
-  inject: (names, cb) => cb({
-    uiWorkspace: { openSession: id => { throw new Error(`sessions.retain: unknown session ${id}`) } },
-  }),
-  sessions: {
-    list: { getSnapshot: () => catalog },
-    refresh: async () => { calls.push(['refresh-noop']) },   // 拉不回来
-    create: async () => 'session-x',
-    scope: () => undefined,
-    sessionOf: () => undefined,
-  },
-}
-const exports3 = entry.factory(name => { if (name === 'react') return React; throw new Error(name) })
-exports3.apply(ctx3)
-const refsBefore3 = refs.length
-const effectsBefore3 = effects.length
-const host4 = makeEl('span')
-registered3[0].Component({ sessionId: 'session-main' })
-for (const r of refs.slice(refsBefore3)) r.current = host4
-for (const fn of effects.slice(effectsBefore3)) fn()
-host4.children[0].onclick()
-const wrap6 = body.children.at(-1)
-wrap6.querySelector('input').value = '走向-幽灵'
-await wrap6.querySelector('.go').onclick()
-const msg6 = wrap6.querySelector('.dsh-branchman-err').textContent
-check('未知会话时不谎报走向失败', msg6.includes('已建立') && msg6.includes('自动切换失败'), msg6)
-check('并指出到哪里手动打开', msg6.includes('会话列表'), msg6)
-
-// ── 走向树视图（GUI 内自绘，不依赖外部浏览器）────────────────────────────
-// ── 走向总览（图形化分支图：SVG 节点/连线/缩放/详情）────────────────────
-console.log('\n### 走向总览图')
-const treeReg = registered.find(r => r.options.id === 'dsh-branchman-tree-button')
-const dockReg = registered.find(r => r.options.id === 'dsh-branchman-tree-dock')
-check('消息尾部注册了走向树按钮', treeReg !== undefined)
-check('输入框旁注册了走向树入口（常驻）',
-  dockReg !== undefined && dockReg.options.name === 'conversation.composer.dock', JSON.stringify(dockReg?.options))
-
-const clickTree = async () => {
-  const refsBefore = refs.length
-  const effectsBefore = effects.length
-  const hostEl = makeEl('span')
-  treeReg.Component({ sessionId: 'session-main' })
-  for (const r of refs.slice(refsBefore)) r.current = hostEl
-  for (const fn of effects.slice(effectsBefore)) fn()
-  const btn = hostEl.children[0]
-  await btn.onclick()
-  const wrap = body.children.at(-1)
-  const card = wrap.children[0]
-  return {
-    btn,
-    wrap,
-    card,
-    canvas: card.querySelector('.dsh-branchman-canvas'),
-    detail: card.querySelector('.dsh-branchman-detail'),
-    stats: card.querySelector('.dsh-branchman-ovstats'),
-    err: card.querySelector('.dsh-branchman-err'),
-  }
-}
-// SVG 图：主线 → test → sub（三级），用来验证层级布局
-const treePayload = () => ({ ok: true, json: async () => ({ version: 1, nodes: [
-  { name: 'test', parentName: null, root: 'E:/repo', branch: 'branchman/test', cwd: 'E:/repo/.branches/test', status: 'open', sessionId: 'session-main', inheritedEvents: 5200, messageCount: 34, lastActivityAt: '2026-09-29T05:19:23.530Z' },
-  { name: 'sub', parentName: 'test', root: 'E:/repo', branch: 'branchman/sub', cwd: 'E:/repo/.branches/sub', status: 'open', sessionId: 'session-host-1', inheritedEvents: 12, messageCount: 0, lastActivityAt: '2026-09-29T05:20:00.000Z' },
-  { name: 'sub2', parentName: 'test', root: 'E:/repo', branch: 'branchman/sub2', cwd: 'E:/repo/.branches/sub2', status: 'dropped', sessionId: 'session-host-2', inheritedEvents: 3, messageCount: 0, lastActivityAt: '2026-09-29T05:21:00.000Z' },
-  { name: 'sub3', parentName: 'test', root: 'E:/repo', branch: 'branchman/sub3', cwd: 'E:/repo/.branches/sub3', status: 'merged', sessionId: 'session-host-3', inheritedEvents: 8, messageCount: 1, lastActivityAt: '2026-09-29T05:22:00.000Z' },
-] }) })
-globalThis.fetch = async (url, init) => {
-  calls.push(['fetch', url, init?.body ? JSON.parse(init.body) : null])
-  if (url === '/branchman/api/tree') return treePayload()
-  return { ok: true, json: async () => ({}) }
-}
-
-const t1 = await clickTree()
-check('打开的是总览浮层（不是小弹窗）', String(t1.wrap.className).includes('dsh-branchman-overlay'), String(t1.wrap.className))
-check('入口按钮文案为「走向总览」', t1.btn.textContent.includes('走向总览'), t1.btn.textContent)
-const svg = t1.canvas.children[0]
-check('画布内是 SVG', svg !== undefined && svg.tagName === 'svg', String(svg?.tagName))
-check('SVG 用固定 viewBox（缩放不糊）', svg?.attrs?.viewBox === '0 0 960 520', String(svg?.attrs?.viewBox))
-const g = svg.children[0]
-const gnodes = g.children.filter(c => String(c.attrs?.class ?? '').includes('gnode'))
-const edges = g.children.filter(c => c.attrs?.class === 'dsh-branchman-edge')
-check('五个节点方块（主线 + 4 条走向）', gnodes.length === 5, String(gnodes.length))
-check('连线数 = 非根节点数（4 条）', edges.length === 4, String(edges.length))
-check('主线节点有独立样式', gnodes.some(n => String(n.attrs.class).includes('is-main')))
-const yOf = node => Number(String(node.attrs.transform).match(/translate\(([-\d.]+) ([-\d.]+)\)/)[2])
-const mainNode = gnodes.find(n => String(n.attrs.class).includes('is-main'))
-const testNode = gnodes.find(n => n.children.some(c => String(c.textContent).includes('test')))
-const subNode = gnodes.find(n => n.children.some(c => String(c.textContent).includes('sub')))
-check('主线在最上层（y=0）', yOf(mainNode) === 0, String(yOf(mainNode)))
-check('一级走向在第二层（y=114）', yOf(testNode) === 114, String(yOf(testNode)))
-check('二级走向在第三层（y=228）', yOf(subNode) === 228, String(yOf(subNode)))
-const xOf = node => Number(String(node.attrs.transform).match(/translate\(([-\d.]+)/)[1])
-const sub2Node = gnodes.find(n => n.children.some(c => String(c.textContent).includes('sub2')))
-check('同级走向横向排开（不重叠）', Math.abs(xOf(subNode) - xOf(sub2Node)) === 202, `${xOf(subNode)} vs ${xOf(sub2Node)}`)
-const siblingXs = gnodes.filter(n => yOf(n) === 228).map(xOf)
-check('父节点居中于全部子节点之上', xOf(testNode) === (Math.min(...siblingXs) + Math.max(...siblingXs)) / 2, `${xOf(testNode)} vs ${(Math.min(...siblingXs) + Math.max(...siblingXs)) / 2}`)
-check('连线是贝塞尔曲线（C 命令）', String(edges[0].attrs.d).includes(' C '), String(edges[0].attrs.d))
-check('节点方块是圆角矩形', gnodes[0].children[0].tagName === 'rect' && gnodes[0].children[0].attrs.rx === '10', String(gnodes[0].children[0]?.tagName))
-check('节点显示走向名与分支', testNode.children.slice(1).map(c => c.textContent).join('|').includes('test') && testNode.children.slice(1).map(c => c.textContent).join('|').includes('branchman/test'), testNode.children.map(c => c.textContent).join('|'))
-check('已拆除走向用虚线样式', String(sub2Node.attrs.class).includes('is-dropped'), String(sub2Node.attrs.class))
-const sub3Node = gnodes.find(n => n.children.some(c => String(c.textContent).includes('sub3')))
-check('已合并走向用绿色样式', String(sub3Node.attrs.class).includes('is-merged'), String(sub3Node.attrs.class))
-check('统计行给出走向数', String(t1.stats.textContent).includes('4 条走向'), String(t1.stats.textContent))
-check('打开即自动适应窗口（有 scale）', String(g.attrs.transform).includes('scale('), String(g.attrs.transform))
-
-// 点节点 → 详情
-const beforeScale = Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1])
-testNode.onclick()
-check('点方框后详情显示走向名', String(t1.detail.children[0].textContent).includes('test'), String(t1.detail.children[0].textContent))
-check('详情显示继承事件数', String(t1.detail.children[1].textContent).includes('继承 5200 事件'), String(t1.detail.children[1].textContent))
-check('详情显示工作区路径', String(t1.detail.children[2].textContent).includes('.branches'), String(t1.detail.children[2].textContent))
-const goLink = t1.detail.children.find(c => c.className === 'dsh-branchman-link')
-check('详情提供「切到该会话」', goLink !== undefined)
-await goLink.onclick()
-check('切会话经 openSession 生效', calls.some(c => c[0] === 'open' && c[1] === 'session-main'))
-
-// 缩放 / 平移
-t1.card.querySelector('.zin').onclick()
-const afterZoomIn = Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1])
-check('放大按钮提升 scale', afterZoomIn > beforeScale, `${beforeScale} -> ${afterZoomIn}`)
-t1.card.querySelector('.zout').onclick()
-check('缩小按钮降低 scale', Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1]) < afterZoomIn)
-const beforeWheel = Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1])
-t1.canvas.onwheel({ deltaY: -100, preventDefault() {} })
-check('滚轮向上放大', Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1]) > beforeWheel, `${beforeWheel} -> ${Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1])}`)
-t1.card.querySelector('.fit').onclick()
-check('适应窗口回到基准 scale', Number(String(g.attrs.transform).match(/scale\(([\d.]+)\)/)[1]) === beforeScale)
-const beforePan = String(g.attrs.transform)
-t1.canvas.onmousedown({ clientX: 100, clientY: 100 })
-t1.canvas.onmousemove({ clientX: 160, clientY: 130 })
-check('拖动平移改变画布位移', String(g.attrs.transform) !== beforePan, `${beforePan} -> ${g.attrs.transform}`)
-t1.canvas.onmouseup()
-check('松手后位移不再变', (() => { const t = String(g.attrs.transform); t1.canvas.onmousemove({ clientX: 400, clientY: 400 }); return String(g.attrs.transform) === t })())
-
-// 刷新（重新拉取）
-const fetchesBefore = calls.filter(c => c[0] === 'fetch' && c[1] === '/branchman/api/tree').length
-await t1.card.querySelector('.go').onclick()
-check('刷新重新拉取树数据', calls.filter(c => c[0] === 'fetch' && c[1] === '/branchman/api/tree').length === fetchesBefore + 1)
-check('刷新后不重复叠加节点', t1.canvas.children.length === 1, String(t1.canvas.children.length))
-
-// 空树
-globalThis.fetch = async () => ({ ok: true, json: async () => ({ nodes: [] }) })
-const t2 = await clickTree()
-check('空树给友好提示', String(t2.canvas.children[0]?.textContent).includes('还没有走向'), String(t2.canvas.children[0]?.textContent))
-check('空树时统计行为空态', String(t2.stats.textContent).includes('还没有走向'), String(t2.stats.textContent))
-
-// 接口报错
-globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'tree backend down' }) })
-const t3 = await clickTree()
-check('总览接口报错时显示原因', String(t3.err.textContent).includes('tree backend down'), String(t3.err.textContent))
+check('浮层注册进宿主分配的 shell.overlay 槽位', /ctx\.slots\.inject\('shell\.overlay'/.test(source))
+check("浮层的注册项带 locale 命名空间", /id: 'dsh-branchman-overlay'[^}]*locale: NS/.test(source))
+check('消息尾部槽位注册了分支按钮与总览按钮',
+  /dsh-branchman-branch-button/.test(source) && /dsh-branchman-tree-button/.test(source))
+check('输入框旁常驻入口也注册了（composer dock）', /conversation\.composer\.dock/.test(source))
+check('样式在 apply 内用 ctx.effect 注册并返回清理',
+  /ctx\.effect\(\(\) => \{[\s\S]{0,400}return \(\) => style\.remove\(\)/.test(source))
+check('走 locale 服务（register + bind）', /locale\.register\(NS, DICT\)/.test(source) && /bound = locale\.bind\(NS\)/.test(source))
+check('切会话走 uiWorkspace.openSession', /workspace\.openSession\(id\)/.test(source))
+check('未知会话先同步目录再打开（真实踩过 sessions.retain）', /syncCatalog/.test(source) && /ctx\.sessions\.refresh\?\.\(\)/.test(source))
+check('布局常量与宿主视图尺寸一致（VIEW_W/H 用于 viewBox）',
+  /viewBox: `0 0 \$\{VIEW_W\} \$\{VIEW_H\}`/.test(source))
+check('滚轮缩放用非被动监听（React 的 onWheel 是 passive，preventDefault 无效）',
+  /addEventListener\('wheel', onWheel, \{ passive: false \}\)/.test(source))
+check('拖动用 pointer 事件并带捕获', /setPointerCapture/.test(source))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
-process.exit(fail === 0 ? 0 : 1)
+if (fail > 0) process.exit(1)

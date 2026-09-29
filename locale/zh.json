@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "工程走向 · Branchman",
+    "description": "把一条工程走向做成一个原子动作：git worktree + 继承对话的子会话 + 自动成树的投影，并在界面里画出来。"
+  }
+}

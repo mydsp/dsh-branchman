@@ -1,6 +1,6 @@
 {
   "name": "dsh-branchman",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tree-branching workspace plugin for DeepSeek Harness: open an engineering direction as one atom — a git worktree plus a child session that inherits the conversation, wired into a tree you can see.",
   "keywords": [
     "deepseek-harness",
@@ -15,12 +15,14 @@
   "license": "MIT",
   "author": "mydsp",
   "type": "module",
+  "icon": "./icon.svg",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
@@ -31,12 +33,13 @@
     "CHANGELOG.md",
     "LICENSE",
     "docs/",
+    "locale/*.json",
+    "icon.svg",
     "scripts/",
     "test/"
   ],
   "scripts": {
-    "test": "node test/run.mjs",
-    "preview": "node scripts/preview-overview.mjs sample docs/_preview.svg"
+    "test": "node test/run.mjs"
   },
   "repository": {
     "type": "git",
