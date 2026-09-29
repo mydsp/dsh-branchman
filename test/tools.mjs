@@ -180,6 +180,18 @@ const tree2 = await call('branch_tree', {})
 const node2 = tree2.nodes.find(n => n.name === NAME)
 check('树节点标记为 dropped（保留审计）', node2 !== undefined && node2.status === 'dropped', JSON.stringify(node2))
 
+// ── 7. root resolution: the UI sends only sourceCwd, never root ────────────
+console.log('\n### root 解析（UI 只发 sourceCwd）')
+const uiFork = await call('branch_fork', { name: '走向-UI路径', sourceSessionId: 'session-main', sourceCwd: REPO })
+check('只给 sourceCwd 时建在仓库根下', uiFork.cwd === join(REPO, '.branches', '走向-UI路径'), String(uiFork.cwd))
+const subDir = join(REPO, 'sub')
+await mkdir(subDir, { recursive: true })
+await writeFile(join(subDir, 'a.txt'), 'x\n', 'utf8')
+await g(['add', '-A'])
+await g(['commit', '-m', 'chore: scratch subdirectory'])
+const subFork = await call('branch_fork', { name: '走向-子目录', sourceSessionId: 'session-main', sourceCwd: subDir })
+check('sourceCwd 是子目录时归一到仓库根', subFork.cwd === join(REPO, '.branches', '走向-子目录'), String(subFork.cwd))
+
 // ── summary ───────────────────────────────────────────────────────────────
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 process.exit(fail === 0 ? 0 : 1)

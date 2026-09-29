@@ -149,8 +149,24 @@ function git(gitPath, cwd, args) {
   })
 }
 
-async function assertRepo(gitPath, root) {
-  if (!existsSync(join(root, '.git'))) throw new Error(`${root} 不是 git 仓。先 git init + 首次提交。`)
+/**
+ * Assert that `dir` is inside a git repository and return that repository's top
+ * level. Checking for a literal `.git` child would reject a subdirectory, while
+ * git itself resolves the repository from any depth — and callers (the UI sends
+ * the session's cwd, which may be nested) rely on that.
+ *
+ * @param dir - directory to probe.
+ * @returns absolute path of the repository root.
+ */
+async function assertRepo(gitPath, dir) {
+  if (!existsSync(dir)) throw new Error(`目录不存在: ${dir}`)
+  try {
+    const top = (await git(gitPath, dir, ['rev-parse', '--show-toplevel'])).trim()
+    if (top === '') throw new Error('empty toplevel')
+    return resolve(top)
+  } catch {
+    throw new Error(`${dir} 不是 git 仓。先 git init + 首次提交。`)
+  }
 }
 
 async function assertCleanRepo(gitPath, root) {
@@ -290,9 +306,15 @@ async function doFork(ctx, store, config, args) {
   const name = String(args?.name ?? '').trim()
   if (!name || name.length > MAX_NAME) throw new Error(`走向名必填且 ≤ ${MAX_NAME} 字符`)
   if (!/^[^\\/:*?"<>|]+$/.test(name)) throw new Error('走向名不能包含 \\ / : * ? " < > |')
-  const root = resolve(String(args?.root ?? config.defaultRoot))
+  // Root resolution: explicit `root` (the agent tool) → the source session's cwd
+  // (the UI sends only `sourceCwd`) → config.defaultRoot. The middle step
+  // matters for a fresh install: with no configured defaultRoot the last
+  // fallback would be the host process's cwd, which is not the user's repository.
+  const requested = resolve(String(args?.root ?? args?.sourceCwd ?? config.defaultRoot))
   const gitPath = config.gitPath
-  await assertRepo(gitPath, root)
+  // Normalises to the repository top level: the session cwd may be a
+  // subdirectory, and worktrees must be created at the repo root.
+  const root = await assertRepo(gitPath, requested)
   await assertCleanRepo(gitPath, root)
   await ensureBranchesIgnored(root)
 
@@ -400,7 +422,10 @@ async function doStatus(ctx, store, config, args) {
       out.push({ name: node.name, error: error.message.slice(0, 120) })
     }
   }
-  return { root: config.defaultRoot, directions: out }
+  // Echo the root the caller meant when it named one; otherwise report where the
+  // open directions actually live rather than a configured default that may not
+  // be related to any of them.
+  return { root: args?.root ?? store.state.nodes[0]?.root ?? config.defaultRoot, directions: out }
 }
 
 async function doMerge(ctx, store, config, args) {

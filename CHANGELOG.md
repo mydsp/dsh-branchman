@@ -41,6 +41,14 @@ First public release.
   offline from the plugin's own drawing code, for visual review without launching
   the app.
 
+### Fixed
+
+- **Root resolution on a fresh install.** The UI sends only the session's cwd
+  (`sourceCwd`), never `root`, so with a portable default the fork used to fall
+  back to the host process's cwd — i.e. not the user's repository at all. The
+  repository is now located with `git rev-parse --show-toplevel`, which also
+  accepts a subdirectory as the starting point.
+
 ### Notes
 
 - Verified against DSH Desktop 2.0.14 / Harness 0.1.7-rc.1.
