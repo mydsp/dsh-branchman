@@ -33,7 +33,7 @@ First public release.
   show up. Metadata only; message bodies never enter the tree file.
 - **`/branchman/` host page** and `/branchman/api/{tree,status,fork,bind}` JSON
   endpoints.
-- **138 offline assertions** across four suites (`npm test`), no host restart and
+- **140 offline assertions** across four suites (`npm test`), no host restart and
   no touching of your own repositories.
 - **`scripts/branchman.ps1`** — a zero-restart CLI fallback for when the plugin
   is not loaded (status / save / fork / list / sync / merge / drop).

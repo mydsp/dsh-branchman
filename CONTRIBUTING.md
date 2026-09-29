@@ -5,7 +5,7 @@
 ```powershell
 node --check index.js            # 宿主半边
 node --check client.js           # 浏览器半边
-npm test                         # 全部 138 项断言
+npm test                         # 全部 140 项断言
 pwsh -File scripts\deploy-local.ps1   # 推到 profile
 # → 完全退出 DSH（含托盘）再启动，插件改动不热重载
 ```

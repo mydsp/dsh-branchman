@@ -106,7 +106,7 @@ writing a DSH plugin, this saves most of the detours. (Chinese.)
 npm test
 ```
 
-**138 assertions in four suites — no host restart, no touching your own repositories**: host tool
+**140 assertions in four suites — no host restart, no touching your own repositories**: host tool
 integration and write-race invariants, the seeded-fork path (inherited history, agent preset, boundary
 algorithm), the browser half driven through a stubbed DOM with real button clicks plus the overview graph,
 and a manifest pre-flight that runs the host's own validation rules so a bad manifest cannot get the whole
