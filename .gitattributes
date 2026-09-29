@@ -1,0 +1,10 @@
+# Normalise line endings in the repo, keep the platform-native ones where it matters.
+* text=auto eol=lf
+
+# Windows-only helper: CRLF keeps it readable in Notepad and safe for cmd.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary

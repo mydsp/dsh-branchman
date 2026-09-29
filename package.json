@@ -1,0 +1,76 @@
+{
+  "name": "dsh-branchman",
+  "version": "0.1.0",
+  "description": "Tree-branching workspace plugin for DeepSeek Harness: open an engineering direction as one atom — a git worktree plus a child session that inherits the conversation, wired into a tree you can see.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "git-worktree",
+    "branching",
+    "agent-workspace",
+    "session-fork"
+  ],
+  "license": "MIT",
+  "author": "mydsp",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/",
+    "scripts/",
+    "test/"
+  ],
+  "scripts": {
+    "test": "node test/run.mjs",
+    "preview": "node scripts/preview-overview.mjs sample docs/_preview.svg"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mydsp/dsh-branchman.git"
+  },
+  "homepage": "https://github.com/mydsp/dsh-branchman#readme",
+  "bugs": {
+    "url": "https://github.com/mydsp/dsh-branchman/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  }
+}

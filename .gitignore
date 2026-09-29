@@ -1,0 +1,21 @@
+# dependencies (the plugin itself has none, but a checkout may be pnpm-linked)
+node_modules/
+
+# test scratch: throwaway repos, shim packages, tree data
+test/.tmp/
+
+# local preview artefacts (scripts/preview-overview.mjs + shot-overview.py)
+docs/_preview.svg
+docs/overview-preview.png
+_p-*.svg
+_p-*.png
+
+# runtime data must never be committed (it lives in $DSH_HOME, not here)
+tree.json
+
+# editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

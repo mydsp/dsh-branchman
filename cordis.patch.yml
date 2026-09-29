@@ -1,0 +1,15 @@
+# dsh-branchman — bundle patch for DeepSeek Harness.
+#
+# Inserted into the profile's loader config when the package is listed in
+# `dsh.profile.bundles`. `dataFile` lands under $DSH_HOME so tree metadata
+# survives restarts.
+#
+# Optional config keys (both have portable defaults — omit them unless needed):
+#   defaultRoot: repository root used when a tool call omits `root`
+#                (default: the process cwd)
+#   gitPath:     git executable (default: "git", resolved from PATH)
+- insert:
+    - id: branchman
+      name: dsh-branchman
+      config:
+        dataFile: !!js dshHomePath('branchman/tree.json')
