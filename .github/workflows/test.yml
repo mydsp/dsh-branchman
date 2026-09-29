@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No install step on purpose: the plugin and its tests have zero runtime
+      # dependencies (node builtins + the host's own bare @deepseek-ai/* imports,
+      # which only resolve inside a running DSH).
+      - name: Run suites
+        run: npm test
+      # DSH is not installed on the runner, so the manifest suite reports the
+      # one host-dependent assertion as SKIP instead of FAIL.
