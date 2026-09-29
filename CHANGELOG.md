@@ -49,6 +49,12 @@ First public release.
   repository is now located with `git rev-parse --show-toplevel`, which also
   accepts a subdirectory as the starting point.
 
+### Distribution
+
+- Published to npm as [`dsh-branchman`](https://www.npmjs.com/package/dsh-branchman) —
+  `pnpm add dsh-branchman`. The tarball checksum matches a local `npm pack`.
+  Future releases go through GitHub Actions with npm trusted publishing (OIDC).
+
 ### Notes
 
 - Verified against DSH Desktop 2.0.14 / Harness 0.1.7-rc.1.

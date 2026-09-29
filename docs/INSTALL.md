@@ -13,11 +13,11 @@
 
 ---
 
-## 方式 A：从 GitHub 安装（推荐）
+## 方式 A：从 npm 安装（推荐）
 
 ```powershell
 cd $env:DSH_HOME\profiles\desktop
-pnpm add github:mydsp/dsh-branchman
+pnpm add dsh-branchman
 ```
 
 然后把包名加进该 profile 的 `package.json`：
@@ -38,10 +38,23 @@ pnpm add github:mydsp/dsh-branchman
 最后**完全退出 DSH（含托盘图标）再启动**——注意：Desktop 版的 `desktop` profile 由 Electron 托管，
 CLI 的 `dsh plugin add` 会被拒绝，必须走上面这条等价路径。
 
-> **`ECONNREFUSED 127.0.0.1:7897`**：本机 npm 配了一个已停止的代理。
-> 临时绕过：`pnpm add github:mydsp/dsh-branchman --config.proxy=null --config.https-proxy=null`
+> **`ECONNREFUSED`（例如指向 `127.0.0.1:7897`）**：你本机的 npm 配了一个当前连不上的代理
+> （代理软件 / VPN 没开）。两种绕过方式，**别去改全局 `.npmrc`**：
+> `pnpm add dsh-branchman --config.proxy=null --config.https-proxy=null`，
+> 或给单次命令指定一个不含代理的配置：`pnpm --userconfig=<无 proxy 的 .npmrc> add dsh-branchman`。
 
-## 方式 B：手动放置（无网络）
+## 方式 B：从 GitHub 源码安装
+
+包与仓库同源，直接从 git 装也行（`#v0.1.0` 可指定标签）：
+
+```powershell
+cd $env:DSH_HOME\profiles\desktop
+pnpm add github:mydsp/dsh-branchman
+```
+
+同样把 `"dsh-branchman"` 加进 `dsh.profile.bundles`，然后完全重启。
+
+## 方式 C：手动放置（无网络）
 
 把这四个文件放进 `<profile>\node_modules\dsh-branchman\`：
 
@@ -51,7 +64,7 @@ index.js   client.js   package.json   cordis.patch.yml
 
 同样把 `"dsh-branchman"` 加进 `dsh.profile.bundles`，然后完全重启。
 
-## 方式 C：本地开发
+## 方式 D：本地开发
 
 在仓库里改代码后，用同步脚本推到你 profile 里再重启：
 

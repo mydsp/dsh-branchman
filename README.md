@@ -61,11 +61,14 @@ DSH 和 git 各自已经有一半能力，缺的正是中间那一步：
 
 ```powershell
 cd $env:DSH_HOME\profiles\desktop
-pnpm add github:mydsp/dsh-branchman
+pnpm add dsh-branchman
 ```
 
 把 `"dsh-branchman"` 加进该 profile `package.json` 的 `dsh.profile.bundles`，然后
 **完全退出 DSH（含托盘）再启动**——插件代码在宿主启动时加载，没有热重载。
+
+> 想从源码装：`pnpm add github:mydsp/dsh-branchman`（加 `#v0.1.0` 可指定标签）。
+> npm 上的包与仓库同源——0.1.0 的 tarball 校验和与仓库 `npm pack` 产物一致。
 
 > 手动放置、本地开发、配置项与完整排障见 **[docs/INSTALL.md](docs/INSTALL.md)**。
 

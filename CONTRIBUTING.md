@@ -57,30 +57,31 @@ npm test
 
 ## 发布到 npm（维护者）
 
-包名 `dsh-branchman`（未占用）。发布前先自检：
+包名 `dsh-branchman`，首次发布于 2026-09-29。发布前自检：
 
 ```powershell
-npm test                                  # 140 项
-npm pack --dry-run                        # 核对白名单：应为 20 个文件、无临时产物
+npm test            # 140 项断言
+npm pack --dry-run  # 核对白名单：21 个文件，无临时产物
 ```
 
-发布命令要多带一个 `--userconfig`：本机全局 `~/.npmrc` 把 proxy 指到一个**当前未监听的
-本地端口**（VPN 未连接），npm 会一律 `ECONNREFUSED`。用一个不含代理的隔离配置即可，
-不要去禁用全局那份：
+**日常发版走 CI，不需要任何令牌**：`.github/workflows/publish.yml` 使用 npm
+**trusted publishing（OIDC）**。在 npm 包设置 → Trusted Publisher 配置一次即可：
 
-```powershell
-# 一次性：建隔离配置并登录（浏览器/OTP 由本人完成）
-npm login --userconfig="$HOME\.npmrc-npmjs"
+| 字段 | 值 |
+|---|---|
+| Organization or user | `mydsp` |
+| Repository | `dsh-branchman` |
+| Workflow filename | `publish.yml` |
 
-# 每次发布
-npm publish --userconfig="$HOME\.npmrc-npmjs"
+之后在 Actions 页面手动触发该工作流（或创建 Release）就能发版；发布产物自动带
+`--provenance` 签名，npm 页面上会显示"来自此仓库构建"。
 
-# 核验
-npm view dsh-branchman version
-```
+**为什么不直接用 `npm publish`**：npm 自 2025-11 起只接受 granular 令牌，并且正在取消
+"绕过 2FA 的令牌直接发布"（官方公告：此类令牌的发布面将缩减为"暂存 + 维护者用 2FA 批准"）。
+本项目的 0.1.0 是在浏览器的 2FA 挑战下手工发布的（`npm publish --auth-type=web`），此后请走 CI。
 
-> 若没有 npm 账号：`npm adduser --userconfig="$HOME\.npmrc-npmjs"`（或先在 npmjs.com 注册并验证邮箱）。
-> 发布后记得同步更新 README 的安装方式与 `CHANGELOG.md`。
+> 本机若因为 npm 代理（VPN 未连接）报 `ECONNREFUSED`，用隔离配置绕过，**不要改全局 `.npmrc`**：
+> `npm <cmd> --userconfig="$HOME\.npmrc-npmjs"`
 
 ## 报 bug
 

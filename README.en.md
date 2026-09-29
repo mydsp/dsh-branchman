@@ -70,11 +70,14 @@ for when the plugin is not loaded.
 
 ```powershell
 cd $env:DSH_HOME\profiles\desktop
-pnpm add github:mydsp/dsh-branchman
+pnpm add dsh-branchman
 ```
 
 Add `"dsh-branchman"` to `dsh.profile.bundles` in that profile's `package.json`, then **fully quit DSH
 (including the tray icon) and start it again** — plugin code is loaded at host start and is not hot-reloaded.
+
+> Installing from source also works: `pnpm add github:mydsp/dsh-branchman` (append `#v0.1.0` to pin a tag).
+> The npm tarball and the repository are the same content — 0.1.0's checksum matches `npm pack` locally.
 
 > Manual install, local development, configuration and full troubleshooting: **[docs/INSTALL.md](docs/INSTALL.md)** (Chinese).
 
