@@ -193,10 +193,22 @@ fork 时把 `.branches/` 写进 `<repo>/.git/info/exclude`：本地忽略，不�
 传给组件。别用 `ctx.sessions.list.getSnapshot().current` 代替——切换会话中途它可能是 `undefined`，
 子会话会静默丢掉继承的历史。React effect 依赖要写 `[props?.sessionId, props?.messageId]`。
 
-### 23. 托管原生 DOM 时用 ref，不要和 reconciler 抢节点
+### 23. 浮层用 `shell.overlay` 槽位；DOM 与字面颜色都不要自己造
 
-槽位合同要的是 React 组件，而原生按钮（含 `onclick`）更好写。做法：
-组件只渲染一个 `<span ref>`，在 effect 里 `host.innerHTML = ''` 后 append 自建节点，清理函数里移除。
+界面最初是用原生 DOM 拼的（组件内部 `innerHTML` + `append`，对话框直接 `document.body.append`）。
+那套能跑，但违反三条规范，`0.1.1` 全部改掉：
+
+- **不要写组件之外的 DOM，更不要 `document.body.append`**。宿主给浮层留了槽位：
+  `shell.overlay`（`{ kind: "list", scope: "root" }`，由 AppFrame 声明并常驻挂载）。
+  做法是"常驻组件 + 模块级信号"：按钮只调 `setView(...)`，`Overlay` 订阅信号决定渲染什么——
+  不要在点击时创建容器节点。
+- **样式只用主题令牌 `--dsw-alias-*`**（本机实测 49 个，含 `bg-layer-1..4`、`border-l1..l4`、
+  `label-primary/secondary/tertiary/dimmed/caption/error`、`button-primary-fill/hover`、
+  `button-ghost-active-*`、`interactive-bg-hover/-active`、`state-success/warn/error-*`、
+  `bg-mask-1`、`link`、`toast-bg`、`tooltip-bg`）。写死十六进制颜色在暗色主题下必然不跟随。
+- **可见文案走客户端 locale 服务**：`ctx.inject(['locale'], …)` → `locale.register(ns, { zh, en })`
+  注册字典、`locale.bind(ns)` 得到 `t(key, params)`（占位符是 `{name}`）；槽位注册项也可带
+  `locale: ns`。服务缺失时的回退要自己兜住，否则界面露出键名。
 
 ### 24. GUI 对外部浏览器完全关闭
 
@@ -212,14 +224,18 @@ renderer；`decideBrowserAccess` 对无令牌请求一律拒绝（所有路径 4
 ### 25. 插件系统没有"跑一下看看"的便宜路径——把验证做成离线套件
 
 GUI 拒外部浏览器、插件改动要重启、错误只出现在宿主日志或用户弹窗里。
-因此每一条宿主行为都固化成了离线断言（`npm test`，140 项，不需要重启、不碰你的仓库）：
+因此每一条宿主行为都固化成了断言（`npm test`，**128 项**，不需要重启、不碰你的仓库）：
 
 | 套件 | 覆盖 |
 |---|---|
-| `test/tools.mjs` | 宿主五工具全链路 + 并发写不变量 + 守卫 |
+| `test/tools.mjs` | 宿主五工具全链路 + 并发写不变量 + 脏线守卫 + root 解析 |
 | `test/seeded.mjs` | 种子继承 / preset 挂载 / boundary 算法（用 node_modules 垫片解析裸导入） |
-| `test/client.mjs` | 桩 DOM/React/fetch/ctx，真实点击按钮走完整链路 + 总览图 |
-| `test/manifest.mjs` | 宿主 manifest 校验规则预检（防"加载失败 → 整包被回滚"） |
+| `test/client.mjs` | 模块契约 + **纯布局算法单测** + 可静态化的规范条款（不模拟 React/DOM） |
+| `test/manifest.mjs` | manifest 校验预检 + 导出形式 / `ctx.effect` 清理 / 元数据白名单 |
+
+注意 `test/client.mjs` 的形态变过：`0.1.0` 之前它桩了一套 DOM + React hooks 去"真点按钮"，
+但那属于规范明确不建议的做法（见 §28）。现在它只做三件站得住的事：真实加载产物核对模块契约、
+直接单测纯函数、静态核对能静态化的条款。
 
 ### 26. 写完回归测试，把修复**临时还原**一次确认它会红
 
@@ -231,7 +247,81 @@ GUI 拒外部浏览器、插件改动要重启、错误只出现在宿主日志�
 `agents` 服务上并没有 `presetForObservation`；如果桩"贴心地"提供了它，这个 bug 永远不会被测出来。
 把桩写成"服务只有真实存在的成员"，插件一旦调用了不存在的东西，套件立刻红。
 
-### 28. 视觉产物也要能离线核对
+### 28. 不要用"预览 / 模拟渲染"替代浏览器验证——规范明确禁止
 
-`scripts/preview-overview.mjs` 用**插件自己的绘制代码**喂数据生成 SVG，
-`shot-overview.py` 截成 PNG——不启动应用就能看到布局对不对。
+`0.1.0` 时我做过一套离线预览：用插件的绘制代码生成 SVG，再用 Playwright 截成 PNG，
+另外用桩 DOM + 桩 React 在测试里"真点按钮"。看上去很扎实，但官方验证章节直接点名禁止：
+
+> Before or after installation, do not search for rasterizers, invoke Quick Look, **extract SVG into
+> preview files, emulate React/DOM, or implement a custom renderer** to compensate for missing
+> browser control. A screenshot of a mock page is not verification of the running plugin.
+> —— `references/verification.md`
+
+理由站得住：模拟出来的"通过"会让人误以为界面已经验证过了，而真实宿主里主题、槽位层级、
+焦点与事件系统都可能不一样。`0.1.1` 起：
+
+- 预览与栅格化脚本移出仓库（留在本机 `E:\tools\branchman\`）；
+- `test/client.mjs` 不再模拟 React/DOM，改成单测纯布局算法 + 静态核对规范条款；
+- 文档里**明确写清"视觉验证未在 agent 侧完成"**，而不是拿一张示意图充当证据。
+
+没有浏览器控制时，规范允许的验证只有三样：JS 语法、manifest 校验、槽位注册本身。
+
+---
+
+## 七、规范合同（0.1.1 补齐）
+
+宿主自带的 `cordis-plugin-development` 技能里写死了插件的导出形式、资源归属、样式与文案规则。
+以下三条是**读规范才发现的**——功能一直正常，但不符合合同。
+
+### 29. 导出形式只有两种，且不得混用
+
+`references/host-plugin.md`：
+
+> `index.js` exports one of these forms; do not mix them:
+> `export function apply(ctx, config) {}` with optional `export const inject = ['tools']` and
+> `export const Config`; or a service class as the default export.
+
+也就是说 `export default apply` 配 `apply.inject = [...]`（很多存量插件这么写、也能跑）**不是**规范形式。
+正确写法是具名导出：
+
+```js
+export async function apply(ctx, config) { … }
+export const inject = ['webServer', 'sessions', 'tools']
+export const Config = Schema.object({ … })
+```
+
+### 30. 每个注册都必须属于一个能清理的 effect
+
+> Register every resource inside `apply` with `ctx.effect` or `ctx.on` and return its cleanup.
+
+工具是 `ctx.tools.register(...)`、路由是 `ctx.webServer.register(...)`，两者**都返回 disposer**，
+但如果不把它交回给 effect，插件卸载或 profile 补丁换行时它们会留在已死的上下文上。做法：
+
+```js
+ctx.effect(() => {
+  const disposers = [ tool({ … }), tool({ … }) ]
+  return () => { for (const d of disposers) { try { d?.() } catch {} } }
+}, 'branchman: agent tools')
+```
+
+### 31. `Config` 用 schemastery 声明，且要能优雅缺席
+
+声明 `Config` 后宿主会按 schema 校验行里的 `config`，用户才能在 `cordis.patch.yml` 里改。
+写法与**守卫导入**（`schemastery` 是宿主依赖，插件上下文能解析，但不同宿主不保证）：
+
+```js
+let Schema = null
+try {
+  const mod = await import('schemastery')
+  const candidate = mod.default ?? mod
+  if (typeof candidate?.object === 'function') Schema = candidate
+} catch { /* 没有 schema：退回裸配置 */ }
+
+export const Config = Schema === null ? undefined : Schema.object({
+  dataFile: Schema.string().default(''),
+  gitPath: Schema.string().default('git'),
+})
+```
+
+> 逐条对照表（含仍存的限制与理由）在仓库 `docs/CONFORMANCE.md`；`npm test` 里有断言钉住
+> 导出形式与 effect 清理这两条，改回去就会红。

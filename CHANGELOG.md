@@ -4,6 +4,45 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-09-29
+
+按宿主官方插件规范（`dsh-agent-preset/skills/cordis-plugin-development`）逐条整改。
+
+### Changed
+
+- **宿主半边改用规范的导出形式**：`export async function apply` + `export const inject`，
+  不再用 `export default apply` 配 `apply.inject = […]`（规范明确两种形式不得混用）。
+- **每处注册都由 `ctx.effect` 拥有并返回清理**：五个 agent 工具与两条 web 路由现在都会在
+  插件卸载 / profile 补丁替换时被摘掉，不再留在已死的上下文上。
+- **补 `export const Config`**（schemastery schema）：`dataFile` / `defaultRoot` / `gitPath`
+  从此可在 `cordis.patch.yml` 里被校验与补全；取不到 schemastery 的宿主自动退回裸配置。
+- **客户端重写为 React 组件**：对话框与总览注册进宿主分配的 `shell.overlay` 槽位
+  （`kind: "list"`, `scope: "root"`），不再向 `document.body` 追加浮层。
+- **样式只用主题令牌 `--dsw-alias-*`**（49 个令牌中的相关子集）：深色/浅色主题、以及未来的
+  改版都会自动跟随，不再有写死的十六进制颜色。
+- **全部可见文案走客户端 locale 服务**（`locale.register` + `locale.bind`），内置中英文案，
+  服务缺失时回退到中文，界面不会露出键名。
+- **插件卡片元数据**：新增 `icon.svg`（`currentColor`，跟随主题）与 `locale/{zh,en}.json` 的
+  `meta.title`/`meta.description`，并在 `exports`/`files` 中声明。
+
+### Removed
+
+- 预览与栅格化工具链（`preview-overview.mjs`、`shot-overview.py`）移出仓库：官方验证章节
+  明确不要用"抽 SVG 预览 / 模拟 React / 自定义渲染器"替代浏览器控制下的验证。
+
+### Tests
+
+- `test/client.mjs` 不再模拟 React/DOM。改为：真实加载产物核对模块契约、直接单测纯布局算法
+  （`__test.layoutTree`）、静态核对可静态化的规范条款（不写 `document.body`、无字面颜色、
+  文案全部过字典、浮层走 `shell.overlay`）。
+- `test/manifest.mjs` 增加导出形式、`ctx.effect` 清理、元数据与白名单断言。
+- 合计 **125 项断言**（tools 31 · seeded 26 · client 45 · manifest 23），四套件全绿。
+
+### Documentation
+
+- 新增 [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md)：逐条对照官方规范的符合性表（含仍存的
+  限制与理由），并说明视觉验证为何只能在运行中的页面里做。
+
 ## [0.1.0] — 2026-09-29
 
 First public release.

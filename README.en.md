@@ -118,6 +118,20 @@ plugin rolled back.
 Zero dependencies — no `npm install` needed. CI runs the same suites on ubuntu with node 22 and 24 (the one
 assertion that needs a local DSH install reports `SKIP` there instead of `FAIL`).
 
+## Conformance
+
+Checked clause by clause against the host's own plugin specification
+(`dsh-agent-preset/skills/cordis-plugin-development`); the table lives in
+**[docs/CONFORMANCE.md](docs/CONFORMANCE.md)**. What 0.1.1 fixed: the Host export form,
+`ctx.effect` ownership of every registration, overlays moved into the host's `shell.overlay`
+slot (nothing is appended to `document.body`), theme tokens instead of literal colours,
+UI copy routed through the Client locale service, and plugin-card metadata.
+
+**Verification boundary, stated plainly**: there is no browser control on the agent side
+(the GUI rejects every external browser with 403), so the interface has **not** been visually
+verified by the agent. `npm test` covers syntax, the manifest, the tool pipeline, the seeded
+fork path, the pure layout maths and statically checkable conformance clauses.
+
 ## Compatibility
 
 - Tested against DSH Desktop 2.0.14 / Harness 0.1.7-rc.1

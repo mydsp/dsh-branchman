@@ -13,6 +13,20 @@
 
 ---
 
+## 安装路径怎么选
+
+| 路径 | 前提 | 说明 |
+|---|---|---|
+| **A. 从 npm 装** | profile 目录可用 pnpm | 最标准；宿主按包名从 `node_modules` 解析 bundle |
+| B. 从 GitHub 源码装 | 同上 + 有 git | 包内容与 npm 一致，可锁标签 |
+| C. 手动放置 | 无网络 | 四个文件即插即用 |
+| D. 本地开发 | 有仓库源码 | 同步脚本 + 重启 |
+
+> 宿主规范建议通过 `plugin_manager install_bundle` 安装，而**不要**用 shell 复刻安装步骤。
+> 本机 Desktop 版的 `desktop` profile 由 Electron 托管，CLI 的 `dsh plugin add` 会被
+> `rejectElectronProfile` 拒绝，所以下面给出的是实测可用的等价路径；如果你的宿主暴露了
+> `plugin_manager` 工具，优先用它安装。
+
 ## 方式 A：从 npm 安装（推荐）
 
 ```powershell

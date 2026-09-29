@@ -4,7 +4,9 @@
 
 ![走向总览](docs/overview.png)
 
-*GUI 内的走向总览：主线是深色根节点，每条走向是一个方框，已合并=绿框、已拆除=灰虚线；可拖动平移、滚轮缩放、点方框看详情并切过去。*
+*GUI 内的走向总览（**文档插图**，不是运行验证证据）：主线是根节点，每条走向是一个方框，
+已合并=success 色框、已拆除=灰虚线；可拖动平移、滚轮缩放、点方框看详情并切过去。
+配色与字号全部取自宿主主题令牌，深浅色主题都跟随。*
 
 ---
 
@@ -85,7 +87,7 @@ pnpm add dsh-branchman
 
 ## 开发 DSH 插件必读
 
-**[docs/PLUGIN-NOTES.md](docs/PLUGIN-NOTES.md)** 是 28 条**用真实报错换来的**宿主行为合同：
+**[docs/PLUGIN-NOTES.md](docs/PLUGIN-NOTES.md)** 是 31 条**用真实报错换来的**宿主行为合同（0.1.1 补了三条读规范才发现的）：
 cordis 服务 Proxy 的抛错语义、`defineTool` 的必要性、`exports["./client"]` 为什么必须是字符串、
 客户端会话目录为什么要在打开前 `refresh()`、写盘并发的 ENOENT、
 以及"GUI 对外部浏览器完全关闭"这类只在踩坑后才知道的事实。
@@ -97,17 +99,28 @@ cordis 服务 Proxy 的抛错语义、`defineTool` 的必要性、`exports["./cl
 npm test
 ```
 
-**140 项断言 / 四个套件 / 不需要重启宿主 / 不碰你自己的仓库**：
+**128 项断言 / 四个套件 / 不需要重启宿主 / 不碰你自己的仓库**：
 
 | 套件 | 覆盖 |
 |---|---|
 | `test/tools.mjs` | 五个工具全链路、脏线守卫、24 次并发写不变量 |
 | `test/seeded.mjs` | 子会话继承历史、agent preset 挂载、boundary 算法 |
-| `test/client.mjs` | 桩 DOM/React/fetch，真实点击按钮走完整链路 + 总览图渲染与交互 |
-| `test/manifest.mjs` | 宿主 manifest 校验规则预检（防"加载失败 → 整包被回滚"） |
+| `test/client.mjs` | 模块契约 + 纯布局算法单测 + 可静态化的规范条款（**不模拟 React/DOM**，见下） |
+| `test/manifest.mjs` | manifest 校验预检 + 导出形式 / `ctx.effect` 清理 / 元数据白名单 |
 
 零依赖，不需要 `npm install`。CI 在 ubuntu + node 22/24 上跑同一套（未装 DSH 时，
 一条依赖宿主安装的断言报 `SKIP` 而不是 `FAIL`）。
+
+## 规范符合性
+
+按宿主自带的插件开发规范（`dsh-agent-preset/skills/cordis-plugin-development`）逐条核对并整改，
+对照表见 **[docs/CONFORMANCE.md](docs/CONFORMANCE.md)**：31 条要求，符合项与有意偏离项都写明理由。
+`0.1.1` 修掉的偏离包括：宿主半边导出形式、注册资源的 `ctx.effect` 归属、浮层改走 `shell.overlay`
+槽位（不再向 `document.body` 追加）、样式改用主题令牌、文案走客户端 locale 服务、补插件卡片元数据。
+
+**验证边界（写在明面上）**：agent 侧没有浏览器控制（GUI 对外部浏览器一律 403），所以界面的
+**视觉呈现未经 agent 验证**——`npm test` 覆盖的是语法、manifest、工具全链路、种子路径、
+纯布局算法与静态规范条款。界面请以你运行中的实际效果为准。
 
 ## 兼容性
 

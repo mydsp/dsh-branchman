@@ -138,27 +138,40 @@ warn**，不挡用户的路。
 ## 四、浏览器半边（`client.js`）
 
 按宿主的模块表合同注册：`window.__ModuleLoader__.load({ id: 包名, factory: require => … })`，
-React 从 factory 的 `require('react')` 取（不打进 bundle）。
+React 从 factory 的 `require('react')` 取（不打进 bundle）。factory 返回 `{ inject, apply }`，
+视图全部是 React 组件，**不向 `document.body` 追加任何节点**。
 
-注册三个槽位入口：
+注册四个槽位入口（`order` 决定同槽位内的先后）：
 
 | 槽位 | 组件 | 作用 |
 |---|---|---|
-| `conversation.chat.assistant-actions` | `⎇ 分支到新走向` | 每条 assistant 消息尾部；props 带该消息所属 `sessionId` |
-| `conversation.chat.assistant-actions` | `🗺 走向总览` | 同上 |
-| `conversation.composer.dock` | `🗺 走向总览` | 输入框旁常驻（树是全局的，不该只藏在消息尾部） |
+| `conversation.chat.assistant-actions` | `BranchAction`（`order: 50`） | 每条 assistant 消息尾部的「⎇ 分支到新走向」；props 带该消息所属 `sessionId` |
+| `conversation.chat.assistant-actions` | `OverviewAction`（`order: 51`） | 同上的「🗺 走向总览」入口 |
+| `conversation.composer.dock` | `OverviewAction`（`order: 60`） | 输入框旁常驻（树是全局的，不该只藏在消息尾部） |
+| `shell.overlay` | `Overlay`（`order: 60`） | 对话框与总览图的宿主分配浮层（`kind: "list"`，`scope: "root"`） |
 
-槽位组件用 ref 托管一个原生 DOM 按钮，避开宿主 reconciler；
-effect 依赖写 `[props?.sessionId, props?.messageId]`，切会话时按钮上下文才跟着换。
+浮层不是在点击时创建的 DOM，而是常驻在 `shell.overlay` 里的组件：按钮只翻一个模块级信号
+（`setView`），`Overlay` 订阅它决定渲染对话框、总览还是空。这样浮层自动落在宿主的层级与主题里，
+也不再有"点击时 append 一个 fixed 容器"的越权操作。
+
+**样式**：`apply` 内一个 `ctx.effect` 注册 `<style>`（返回 `remove()` 清理），CSS **只引用主题令牌**
+（`--dsw-alias-bg-layer-*` / `--dsw-alias-border-l*` / `--dsw-alias-label-*` / `--dsw-alias-button-*` /
+`--dsw-alias-state-*`），因此深浅色主题与未来改版都自动跟随，没有写死的颜色。
+
+**文案**：`locale.register(NS, DICT)` 注册中英字典，`locale.bind(NS)` 拿到 `t`；`tx()` 在服务缺失时
+回退到内置中文字典，界面永不露出键名。校验：`test/client.mjs` 断言源码里每个 `tx('key')` 都在两本字典里。
 
 ### 总览图
 
 - 数据：`GET /branchman/api/tree`
 - 布局：tidy tree —— 叶子按序占位（`NODE_W + H_GAP`），父节点取全部子节点的中点，
-  每级下沉 `NODE_H + V_GAP`；主线是显式画出来的虚拟根节点
-- 绘制：SVG（`rect` + `text` + 三次贝塞尔 `path`），外层 `<g>` 承载 `translate/scale`
-- 交互：拖动平移、滚轮与按钮缩放（0.25×–2.5×）、适应窗口、点方框出详情并可切会话
-- 配色：主线深色反白、已合并绿框、已拆除灰虚线
+  每级下沉 `NODE_H + V_GAP`；主线是显式画出来的虚拟根节点。
+  该算法是纯函数 `layoutTree(nodes)` 并经 `__test` 导出，离线套件直接单测（不需要 DOM）
+- 绘制：React 渲染的 SVG（`rect` + `text` + 三次贝塞尔 `path`），外层 `<g>` 承载 `translate/scale`
+- 交互：pointer 事件拖动平移（带 `setPointerCapture`）、滚轮与按钮缩放（0.25×–2.5×）、
+  适应窗口、点方框出详情并可切会话。滚轮走**非被动**监听（React 的 `onWheel` 是 passive，
+  `preventDefault` 无效）
+- 配色：全部来自主题令牌 —— 主线用更深的层、已合并用 `state-success`、已拆除用虚线 + `label-dimmed`
 
 ## 五、与最初设计稿的偏差
 

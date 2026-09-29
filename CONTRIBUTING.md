@@ -5,7 +5,7 @@
 ```powershell
 node --check index.js            # 宿主半边
 node --check client.js           # 浏览器半边
-npm test                         # 全部 140 项断言
+npm test                         # 全部 128 项断言
 pwsh -File scripts\deploy-local.ps1   # 推到 profile
 # → 完全退出 DSH（含托盘）再启动，插件改动不热重载
 ```
@@ -60,7 +60,7 @@ npm test
 包名 `dsh-branchman`，首次发布于 2026-09-29。发布前自检：
 
 ```powershell
-npm test            # 140 项断言
+npm test            # 128 项断言
 npm pack --dry-run  # 核对白名单：21 个文件，无临时产物
 ```
 
