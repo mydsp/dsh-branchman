@@ -13,6 +13,9 @@ _p-*.png
 # runtime data must never be committed (it lives in $DSH_HOME, not here)
 tree.json
 
+# publish credentials: an isolated npm userconfig holding an access token
+.npmrc.publish
+
 # editor / OS noise
 .DS_Store
 Thumbs.db

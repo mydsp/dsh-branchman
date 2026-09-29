@@ -55,6 +55,33 @@ npm test
 - [ ] `CHANGELOG.md` 的 `Unreleased` 段写清楚改了什么、为什么
 - [ ] 涉及宿主 API 的新发现，补进 `docs/PLUGIN-NOTES.md`（那是本项目最值钱的部分）
 
+## 发布到 npm（维护者）
+
+包名 `dsh-branchman`（未占用）。发布前先自检：
+
+```powershell
+npm test                                  # 140 项
+npm pack --dry-run                        # 核对白名单：应为 20 个文件、无临时产物
+```
+
+发布命令要多带一个 `--userconfig`：本机全局 `~/.npmrc` 把 proxy 指到一个**当前未监听的
+本地端口**（VPN 未连接），npm 会一律 `ECONNREFUSED`。用一个不含代理的隔离配置即可，
+不要去禁用全局那份：
+
+```powershell
+# 一次性：建隔离配置并登录（浏览器/OTP 由本人完成）
+npm login --userconfig="$HOME\.npmrc-npmjs"
+
+# 每次发布
+npm publish --userconfig="$HOME\.npmrc-npmjs"
+
+# 核验
+npm view dsh-branchman version
+```
+
+> 若没有 npm 账号：`npm adduser --userconfig="$HOME\.npmrc-npmjs"`（或先在 npmjs.com 注册并验证邮箱）。
+> 发布后记得同步更新 README 的安装方式与 `CHANGELOG.md`。
+
 ## 报 bug
 
 请带上：插件版本、DSH 版本、`$DSH_HOME` 下对应的宿主日志片段（`branchman:` 开头的行）、
