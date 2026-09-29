@@ -38,6 +38,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `test/manifest.mjs` 增加导出形式、`ctx.effect` 清理、元数据与白名单断言。
 - 合计 **125 项断言**（tools 31 · seeded 26 · client 45 · manifest 23），四套件全绿。
 
+### Distribution
+
+- Published to npm as `dsh-branchman@0.1.1` by **GitHub Actions trusted publishing (OIDC)** — no token, no
+  OTP — with a **provenance attestation**. Verified: `npm install dsh-branchman && npm audit signatures`
+  reports `1 package has a verified attestation`; the unpacked tarball matches the repository file by file.
+
 ### Documentation
 
 - 新增 [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md)：逐条对照官方规范的符合性表（含仍存的
@@ -88,10 +94,10 @@ First public release.
   repository is now located with `git rev-parse --show-toplevel`, which also
   accepts a subdirectory as the starting point.
 
-### Distribution
+### Distribution (0.1.0)
 
 - Published to npm as [`dsh-branchman`](https://www.npmjs.com/package/dsh-branchman) —
-  `pnpm add dsh-branchman`. The tarball checksum matches a local `npm pack`.
+  `pnpm add dsh-branchman`. Published locally for this version, so the tarball checksum matches a local `npm pack`.
   Future releases go through GitHub Actions with npm trusted publishing (OIDC).
 
 ### Notes

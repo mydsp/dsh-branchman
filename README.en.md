@@ -77,7 +77,9 @@ Add `"dsh-branchman"` to `dsh.profile.bundles` in that profile's `package.json`,
 (including the tray icon) and start it again** — plugin code is loaded at host start and is not hot-reloaded.
 
 > Installing from source also works: `pnpm add github:mydsp/dsh-branchman` (append `#v0.1.0` to pin a tag).
-> The npm tarball and the repository are the same content — 0.1.0's checksum matches `npm pack` locally.
+> The npm tarball and the repository are the same content (unpacked and compared file by file; for 0.1.0 even
+> the tarball checksum matched). **From 0.1.1 on it is built by GitHub Actions trusted publishing (OIDC) with a
+> provenance attestation** — `npm install dsh-branchman && npm audit signatures` reports a `verified attestation`.
 
 > Manual install, local development, configuration and full troubleshooting: **[docs/INSTALL.md](docs/INSTALL.md)** (Chinese).
 

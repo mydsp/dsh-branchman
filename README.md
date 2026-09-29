@@ -70,7 +70,10 @@ pnpm add dsh-branchman
 **完全退出 DSH（含托盘）再启动**——插件代码在宿主启动时加载，没有热重载。
 
 > 想从源码装：`pnpm add github:mydsp/dsh-branchman`（加 `#v0.1.0` 可指定标签）。
-> npm 上的包与仓库同源——0.1.0 的 tarball 校验和与仓库 `npm pack` 产物一致。
+> npm 上的包与仓库同源：解包后逐文件比对一致（0.1.0 连 tarball 校验和都相同）。
+> **0.1.1 起由 GitHub Actions 的可信发布（OIDC）构建，并附带 provenance 证明**——
+> `npm install dsh-branchman && npm audit signatures` 会报 `verified attestation`，
+> 可核验它确实由本仓库的该次提交构建。
 
 > 手动放置、本地开发、配置项与完整排障见 **[docs/INSTALL.md](docs/INSTALL.md)**。
 
