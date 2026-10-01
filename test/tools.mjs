@@ -146,12 +146,22 @@ check('status 列出该走向', dir !== undefined)
 check('status 报 ahead=0/behind=0/dirty=0', dir !== undefined && dir.ahead === 0 && dir.behind === 0 && dir.dirty === 0, JSON.stringify(dir))
 
 // ── 4. dirty guard (main line) ────────────────────────────────────────────
-console.log('\n### 脏工作区守卫（主线）')
+// 2026-10-01 起脏主线不再阻断：随手开是常态，未提交改动随分叉带进走向
+// （已跟踪走 diff/apply，未跟踪逐个复制），主线保持不动。
+console.log('\n### 脏主线：不再阻断，未提交改动随分叉带进走向')
 await writeFile(join(REPO, 'dirty-in-main.txt'), 'dirty\n', 'utf8')
-let dirtyErr = ''
-try { await call('branch_fork', { name: '走向-应被拒', root: REPO }) } catch (e) { dirtyErr = e.message }
-check('主线脏时拒绝开新走向', dirtyErr.includes('未提交'), dirtyErr)
-check('被拒时未留下 worktree', !existsSync(join(REPO, '.branches', '走向-应被拒')))
+let carried
+try { carried = await call('branch_fork', { name: '走向-带改动', root: REPO }) } catch (e) { carried = { error: e.message } }
+check('主线脏时也能开走向', typeof carried.cwd === 'string' && carried.cwd !== '', JSON.stringify(carried).slice(0, 240))
+check('未跟踪的改动文件已带进走向', typeof carried.cwd === 'string' && existsSync(join(carried.cwd, 'dirty-in-main.txt')))
+check('主线上的原文件保持不动', existsSync(join(REPO, 'dirty-in-main.txt')))
+const carriedTree = await call('branch_tree', {})
+check('带改动的走向已入树', carriedTree.nodes.some(n => n.name === '走向-带改动'))
+// 走向内的副本此刻也是未跟踪状态——正好验证"复制不是移动"。
+check('走向内副本未被 git 跟踪（复制不是移动）',
+  !(await g(['status', '--porcelain'], carried.cwd)).stdout.split('\n').some(l => l.includes('dirty-in-main.txt') && l.startsWith('A')))
+await call('branch_drop', { name: '走向-带改动' })
+check('清理：带改动的走向已拆除', !existsSync(join(REPO, '.branches', '走向-带改动')))
 await rm(join(REPO, 'dirty-in-main.txt'), { force: true })
 
 // ── 5. merge ──────────────────────────────────────────────────────────────

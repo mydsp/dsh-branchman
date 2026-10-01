@@ -10,7 +10,7 @@
 //
 // Docs: README.md · docs/ARCHITECTURE.md · docs/PLUGIN-NOTES.md
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -487,14 +487,65 @@ async function doFork(ctx, store, config, args) {
   // Normalises to the repository top level: the session cwd may be a
   // subdirectory, and worktrees must be created at the repo root.
   const root = await assertRepo(gitPath, requested)
-  await assertCleanRepo(gitPath, root)
+  // 随手开是常态，不该被"先提交或 stash"挡住。主线的未提交改动随分叉原样带进
+  // 新 worktree：已跟踪文件的改动走 `git diff HEAD --binary` → worktree 内
+  // `git apply`（worktree 从同一 HEAD 建出，必然干净套用）；未跟踪的新文件
+  // （git diff 看不见它们，而它们恰恰是进行中工作的常态）逐个复制过去。
+  // 主线自己一字不动——复制不是移动。merge/sync 的脏守卫不受影响：那两处
+  // 拦的是"把无关改动混进主线"，方向相反。
+  const mainDiff = (await git(gitPath, root, ['diff', 'HEAD', '--binary'])).trim()
   await ensureBranchesIgnored(root)
+  // 必须在 ensureBranchesIgnored 之后列未跟踪文件：.branches/ 进了本地排除，
+  // 别的走向 worktree 才不会出现在这份清单里。-z 保证 CJK 文件名不被转义。
+  const untracked = (await git(gitPath, root, ['ls-files', '--others', '--exclude-standard', '-z']))
+    .split('\0')
+    .map(entry => entry.trim())
+    .filter(Boolean)
 
   const branch = `branchman/${name}`
   const worktree = join(root, '.branches', name)
   if (existsSync(worktree)) throw new Error(`走向目录已存在: ${worktree}`)
 
   await git(gitPath, root, ['worktree', 'add', '-b', branch, worktree, args?.from ?? 'main'])
+
+  // 把主线的未提交改动带进新 worktree。补丁走 .git 目录下的临时文件（git 助手
+  // 不接 stdin）；未跟踪文件逐个复制，单个失败跳过不碍事。整体失败不回滚
+  // fork——worktree 本身可用，只是没带上改动，原因照实报给用户。
+  let carryNote = ''
+  const carriedParts = []
+  const carryFailed = []
+  if (mainDiff !== '') {
+    const patchFile = join(root, '.git', `branchman-carry-${process.pid}-${Date.now()}.patch`)
+    try {
+      await writeFile(patchFile, mainDiff + '\n', 'utf8')
+      await git(gitPath, worktree, ['apply', '--whitespace=nowarn', patchFile])
+      const files = mainDiff.split('\n').filter(line => line.startsWith('diff --git')).length
+      carriedParts.push(`${files} 个已跟踪文件的改动`)
+    } catch (error) {
+      carryFailed.push(`已跟踪改动 apply 失败：${String(error.message ?? error).split('\n')[0]}`)
+    } finally {
+      try { await rm(patchFile, { force: true }) } catch { /* already gone */ }
+    }
+  }
+  {
+    let copied = 0
+    for (const rel of untracked) {
+      try {
+        const src = join(root, rel)
+        const dst = join(worktree, rel)
+        if (!existsSync(src)) continue // 列表与复制之间被删掉的竞态，跳过
+        await mkdir(dirname(dst), { recursive: true })
+        await copyFile(src, dst)
+        copied += 1
+      } catch { /* 单个文件复制失败不碍事 */ }
+    }
+    if (copied > 0) carriedParts.push(`${copied} 个未跟踪新文件`)
+  }
+  if (carryFailed.length > 0) {
+    carryNote = `${carryFailed[0]}——它们仍留在主线上`
+  } else if (carriedParts.length > 0) {
+    carryNote = `已把主线的未提交改动带进该走向（${carriedParts.join(' + ')}），主线保持不动`
+  }
 
   // p1-fix2 (2026-09-28): the origin guard is CONDITIONAL — omitting `origin`
   // passes validation entirely (validateSessionHeader only rejects a present
@@ -539,6 +590,11 @@ async function doFork(ctx, store, config, args) {
       inheritedEvents: child.inherited,
       workspaceId: workspace.workspaceId,
     }))
+    // 随手开是常态：一句 brief 是这条走向最可靠的"内容摘要"（用户自己的话，
+    // 而且此刻就可用，不必等读子会话日志）。手写的 preview 会阻止
+    // ensurePreview 的日志回退——正是想要的优先级。
+    const brief = flattenText(args?.brief)
+    if (brief !== '') await store.mutate(() => store.upsert({ name, preview: brief.slice(0, 80) }))
   } catch (error) {
     try {
       await git(gitPath, root, ['worktree', 'remove', worktree.replace(/\\/g, '/'), '--force'])
@@ -565,6 +621,7 @@ async function doFork(ctx, store, config, args) {
     workspaceId: workspace.workspaceId ?? null,
     ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
     hint: `走向「${name}」已建立。\n  目录: ${worktree}\n  分支: ${branch}`
+      + (carryNote !== '' ? `\n  ${carryNote}` : '')
       + (node.sessionId === null
         ? '\n  （子会话创建失败，但 worktree 可用——可手动指向该目录）'
         : child.seeded

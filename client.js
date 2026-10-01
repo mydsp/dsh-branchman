@@ -38,7 +38,7 @@ window.__ModuleLoader__.load({
         'action.overview': '🗺 走向总览',
         'action.overview.title': '看整个工程的走向树：谁从谁分出来、各走向状态、随时切过去',
         'dlg.title': '开新工程走向',
-        'dlg.hint': 'git worktree + 完整历史子会话（工作区自动切到 .branches\\<名>）+ 树上自动连线',
+        'dlg.hint': 'git worktree + 完整历史子会话（工作区自动切到 .branches\\<名>）+ 树上自动连线。主线有未提交改动也能直接开：改动会原样带进走向（未跟踪的新文件除外），主线保持不动。',
         'dlg.name': '走向名，如：走向-视觉方案',
         'dlg.brief': '一句话交接：这条走向要验证什么？（会写进子会话的首条上下文）',
         'dlg.cancel': '取消',
@@ -140,7 +140,7 @@ window.__ModuleLoader__.load({
         'action.overview': '🗺 Direction overview',
         'action.overview.title': 'The whole direction tree: what forked from what, each direction’s state, jump to any of them',
         'dlg.title': 'Open a new engineering direction',
-        'dlg.hint': 'git worktree + a child session with inherited history (its cwd switches to .branches\\<name>) + an edge in the tree',
+        'dlg.hint': 'git worktree + a child session with inherited history (its cwd switches to .branches\\<name>) + an edge in the tree. Uncommitted changes on main are carried into the direction as-is (untracked files excepted); main stays untouched.',
         'dlg.name': 'Direction name, e.g. direction-visual',
         'dlg.brief': 'One-line handoff: what is this direction meant to verify? (becomes the child session’s first context)',
         'dlg.cancel': 'Cancel',
@@ -394,6 +394,34 @@ window.__ModuleLoader__.load({
       return s.length > max ? `${s.slice(0, max - 1)}…` : s
     }
 
+    // 随手开是常态（名字随手填、描述空着），所以识别信息必须不依赖输入质量。
+    // 这把尺子同时服务两处：标签侧把模板标题降级（下面 Overview），输入侧把
+    // 预填名从模板标题之外的来源推导（ForkDialog 的 suggestDirectionName）。
+    const BOILERPLATE_TITLE_RE = /^\s*reference attachments for (?:the )?goal objective\.?(?:\s*\(\d+\))?\s*$/i
+    const slugifyName = raw => String(raw ?? '')
+      .replace(/[\s\\/:*?"<>|'`[\]()（）·，。；：！？—…]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24)
+      .replace(/-+$/g, '')
+    const suggestDirectionName = () => {
+      try {
+        const snapshot = deps.sessions?.list?.getSnapshot?.() ?? {}
+        const id = typeof snapshot.current === 'string' && snapshot.current !== '' ? snapshot.current : null
+        if (id === null) return ''
+        const row = snapshot.byId?.[id]
+        // displayTitle 是侧栏级别的显示名（标题 → 目录名 → id 的回退链），title
+        // 是裸标题；模板标题两个都不能要。
+        for (const candidate of [row?.displayTitle, row?.title]) {
+          if (typeof candidate !== 'string' || candidate === '') continue
+          if (BOILERPLATE_TITLE_RE.test(candidate)) continue
+          const slug = slugifyName(candidate)
+          if (slug !== '') return slug
+        }
+        return ''
+      } catch { return '' }
+    }
+
     // One word for "how is this direction doing", shared by the list row and the
     // detail header so the two can never disagree about it. Returns a locale KEY
     // (not text) so the offline suite can test the precedence without a locale.
@@ -500,6 +528,9 @@ window.__ModuleLoader__.load({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           name, sourceSessionId: sourceId, sourceTitle, sourceCwd,
+          // 一句话交接同时是这条走向的"内容摘要"（宿主存成 node.preview），
+          // 随手开+空描述时才有树上的日志回退。
+          brief: typeof brief === 'string' && brief.trim() !== '' ? brief.trim() : undefined,
           // The control belongs to the turn it is rendered under, and the only
           // handle the browser half gets is that turn's final message id. The
           // host turns it into the cut, so the child starts at THAT section
@@ -667,7 +698,9 @@ window.__ModuleLoader__.load({
 
     // ── fork dialog ───────────────────────────────────────────────────────
     const ForkDialog = ({ props, onClose }) => {
-      const [name, setName] = React.useState('')
+      // 随手开是常态：名字框预填一个从当前对话推导的 git 安全短名，回车两下
+      // 就能得到可辨认的走向；想改名直接打字覆盖。
+      const [name, setName] = React.useState(() => suggestDirectionName())
       const [brief, setBrief] = React.useState('')
       const [status, setStatus] = React.useState('')
       const [error, setError] = React.useState('')
