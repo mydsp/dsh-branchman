@@ -66,7 +66,7 @@ dsh-branchman 把两者焊成一个原子动作，并让这棵树自己长出来
 }
 ```
 
-### 3.2 五个 agent 工具
+### 3.2 六个 agent 工具
 
 全部经宿主的 `defineTool` 包装注册（裸对象注册会让模型永远填不出参数）。
 
@@ -76,10 +76,45 @@ dsh-branchman 把两者焊成一个原子动作，并让这棵树自己长出来
 | `branch_tree` | `{}` | 树的 JSON（含 `capabilities`：哪些宿主服务拿到了） |
 | `branch_status` | `{root?}` | 各走向相对主线的 ahead/behind/dirty |
 | `branch_merge` | `{name}` | `--no-ff` 合回主线；先要求主线干净 |
-| `branch_drop` | `{name}` | 拆 worktree、删分支、节点标记 dropped（保留审计） |
+| `branch_sync` | `{name, from?}` | 反向：把主线（或别的 ref）吸收进走向；同样要求走向内干净 |
+| `branch_drop` | `{name}` | 拆 worktree、删分支、注销工作区登记、节点标记 dropped（保留审计） |
+
+`branch_fork` 的 `execute(args, exec)` **必须读第二个参数**：`dsh-tools` 里是
+`tool.execute(exec.arguments, exec)`，`exec.agent` 就是调用方（`dsh-deja` 读同一处：
+`agent.sessionId ?? agent.session.id`、`agent.session.header.cwd`）。不读它，工具侧
+拿不到源会话，agent 开出来的子会话**必然是空的** —— "从当前对话开一条走向"就成了假话。
 
 守卫：fork 与 merge 都要求**主线干净**（`git status --porcelain` 为空）——否则
 worktree 添加或 merge 会把无关改动卷进来。
+
+### 3.2.1 工作区记账：会话为什么曾经落在「未分组」
+
+`@deepseek-ai/dsh-workspace` 的 `WorkspaceRegistry` 按 **cwd 全等**记账：
+
+```js
+get sessionIds() { return this.record.sessionIds.filter(id => this.host.sessionPath(id) === this.record.path) }
+async attachSession(sessionId) { … if (cwd !== this.record.path) throw new Error(`… its cwd resolves to '${cwd}'`) }
+```
+
+`sessionPath(id)` 是 `fs.realpath(header.cwd)`。走向的子会话 cwd 是 worktree，
+和任何已登记工作区都不相等，于是它不属于任何工作区，侧栏把它归到 **未分组**。
+
+Session Controller 自己的 fork 也在同一条规则上：
+`forkWorkspace(source.header)` 取**源会话**的工作区（原生子会话沿用源 cwd，所以那步校验能过），
+`agents.create` 之后 `workspace.attachSession(childId)`。
+
+走向沿用源工作区是行不通的（cwd 不同，`attachSession` 会抛），所以顺序反过来：
+**先给 worktree 建一个工作区，再挂子会话**。
+
+```js
+const ws = await registry.create(worktree, `走向 ${name}`)   // 幂等：同路径重复调用返回既有实体
+await ws.attachSession(childId)                              // 校验通过后写 sessionPaths + prepend sessionIds
+```
+
+登记失败只警告、不阻断 —— 走向本身仍然可用，但原因如实回报给用户。
+`branch_drop` 会注销这条登记，否则会留下一个名字还在、目录已没的空分组；
+注销用的 id 在 fork 时就记进节点（`workspaceId`），老节点退回 `resolveByPath`，
+并且必须在删 worktree **之前**解析（registry 走 realpath，目录没了就解析不出来）。
 
 ### 3.3 被动树投影（只存元数据）
 
@@ -96,9 +131,14 @@ ctx.on('session/event', …)     // 只更新 messageCount / lastActivityAt / �
 |---|---|
 | `GET /branchman/api/tree` | 树的 JSON（GUI 总览图取这份数据） |
 | `GET /branchman/api/status` | 各走向 git 状态 |
-| `POST /branchman/api/fork` | 原子动作的宿主半边（①） |
+| `POST /branchman/api/fork` | 原子动作的宿主半边（①）；可带 `messageId` 指定分叉点 |
 | `POST /branchman/api/bind` | 客户端补建会话时回填 `sessionId` |
+| `POST /branchman/api/merge` | 总览里的「合并到主线」 |
+| `POST /branchman/api/sync` | 总览里的「同步主线」 |
+| `POST /branchman/api/drop` | 总览里的「拆除走向」（客户端两步确认） |
 | `GET /branchman/` | 宿主侧 HTML 树页（GUI 内可开；外部浏览器被 renderer 令牌栅栏挡住） |
+
+后三条与三个工具共用同一个 `doMerge` / `doSync` / `doDrop`：总览与 agent 不可能走岔。
 
 ### 3.5 种子 fork：真实调用链
 
@@ -169,9 +209,47 @@ React 从 factory 的 `require('react')` 取（不打进 bundle）。factory 返
   该算法是纯函数 `layoutTree(nodes)` 并经 `__test` 导出，离线套件直接单测（不需要 DOM）
 - 绘制：React 渲染的 SVG（`rect` + `text` + 三次贝塞尔 `path`），外层 `<g>` 承载 `translate/scale`
 - 交互：pointer 事件拖动平移（带 `setPointerCapture`）、滚轮与按钮缩放（0.25×–2.5×）、
-  适应窗口、点方框出详情并可切会话。滚轮走**非被动**监听（React 的 `onWheel` 是 passive，
+  适应窗口、点方框出详情。滚轮走**非被动**监听（React 的 `onWheel` 是 passive，
   `preventDefault` 无效）
+- **总览是操作面板，不是图**：详情面板给每条走向 切到该会话 / 合并到主线 / 同步主线 /
+  拆除走向。拆除两步确认（一键删 worktree + 分支太危险），动作走 `/branchman/api/{merge,sync,drop}`，
+  成功后重取树并把选中项指到刷新后的节点（选中项是按值持有的，不重指就会停在旧状态）。
+  已合并的走向只剩「拆除」，已拆除的不给动作
 - 配色：全部来自主题令牌 —— 主线用更深的层、已合并用 `state-success`、已拆除用虚线 + `label-dimmed`
+
+## 四·补、对照 pi 的分支对话语义
+
+pi（`earendil-works/pi`）把会话存成**树**：每条 entry 有 `id` 与 `parentId`，另有一个
+"active leaf"指针指向当前位置。它给用户三个动作：
+
+| pi | 语义 | 本插件 |
+|---|---|---|
+| `/tree` | 在**同一个会话文件**里跳到任意历史点继续 | ✗ 做不到：DSH 的会话是**线性事件日志**（seq 单调），没有 leaf 指针；换分支只能 fork 出新会话 |
+| `/fork` | 从某条更早的**用户消息**新建会话文件 | ✓ `branch_fork` + `messageId`（见下） |
+| `/clone` | 把当前活跃分支复制成新会话 | ✓ `from: 'branchman/<已有走向>'` + 那条走向的 `sourceSessionId` |
+| 离开分支时可**摘要**被放弃的那条并挂到新分支上 | pi `navigateTree({summarize})` | ✗ 暂不做：要一次模型调用，且在本插件里"被放弃的分支"其实就是主线自己，摘要无处可挂 |
+| 树持久化在会话文件里 | entry 树 + leaf | 部分：`tree.json` 记**走向级**的树，消息级的树由 DSH 会话日志自己拥有 |
+
+真正被采纳的那一条是 **`/fork` 的精确性**：pi 的 `/tree` 让人"回到某一节继续"，而按"最新
+完成回合"分叉等于永远从对话末尾分叉 —— 那正好丢掉了用户要的那一节。
+
+浏览器半边唯一拿得到的手柄是槽位 props 里的 `messageId`（`dsh-client-ui-chat` 在回合尾
+渲染 `conversation.chat.assistant-actions` 时传 `closing.finalNode.messageId`）。宿主据此换算：
+
+```js
+resolveMessageBoundary(events, messageId)
+  // 1. 找到 data.message.id === messageId（或 data.id === messageId）的事件
+  // 2. 找它所属回合的 turn/end
+  // 3. 用与 latestCompletedPrefixBoundary 相同的尾部吸收规则收尾
+  //    （遇到 turn/start、user/message+surfaceOp:"append"、agent/inbox/spliced 就停）
+```
+
+认不出的 id 返回 `undefined`，调用方退回"最新完成回合" —— 不挡路。返回体带
+`boundarySource`（`message` / `atSeq` / `latest-turn`）与 `boundarySeq`，
+所以"这条子会话为什么继承了这么多"不需要调试器就能回答。
+
+**关键差别**：原生分支按钮在同一条回合尾旁边，靠 `forkAt(data.seq)` 直接拿到 seq；
+插件的槽位只拿到 `messageId`，所以这一步换算是插件独有的、也必须由插件做对。
 
 ## 五、与最初设计稿的偏差
 
@@ -187,7 +265,9 @@ React 从 factory 的 `require('react')` 取（不打进 bundle）。factory 返
 2. 节点主键是走向名 + cwd；`sessionId` 断了不报错
 3. 写盘串行 + 每次唯一临时名
 4. 建 worktree 前主线必须干净；建完把 `.branches/` 写进 `.git/info/exclude`（本地忽略，不动跟踪文件）
-5. 五工具必须经 `defineTool` 注册
+5. 六工具必须经 `defineTool` 注册；`branch_fork` 必须读 `execute` 的第二个参数（`exec.agent`）
 6. 可选宿主服务一律 `ctx.inject`，绝不直接读 `ctx.x`
 7. 客户端切会话只走 `uiWorkspace.openSession`（`ctx.sessions` 上没有 `open`）
 8. 任何失败都要给用户一句**可操作**的话，不许静默降级
+9. 建 worktree 之后必须给它登记工作区并挂上子会话；drop 时必须注销该登记
+10. 分叉点必须来自"用户点的那条消息"，只有在拿不到 `messageId` 时才退回最新完成回合

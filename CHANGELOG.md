@@ -4,6 +4,52 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-10-01
+
+三个实机反馈：走向会话落在「未分组」、总览只能看不能动手、分叉点不精确。
+
+### Fixed
+
+- **走向的会话不再落进「未分组」**。Workspace 按 **cwd 全等**记账
+  （`@deepseek-ai/dsh-workspace`：`sessionPath(id) === record.path`，`attachSession` 会拒绝
+  任何"解析到别的路径"的 cwd），而走向子会话的 cwd 是 worktree —— 所以它不属于任何工作区，
+  侧栏只能把它扔进「未分组」。现在 fork 后立即 `workspaceRegistry.create(worktree, '走向 <名>')`
+  并 `workspace.attachSession(childId)`，与 Session Controller 自己的 fork 同款收尾步骤。
+  切换到「按工作区树」分组时，走向会按路径前缀嵌在项目下面。
+  登记失败**不阻断**走向，但会把原因原样报给用户（不再静默）。
+- **`branch_drop` 会注销该走向的工作区登记**，不留一个名字还在、目录已没的空分组。
+  （注销用 fork 时记下的 `workspaceId`；老节点退回 `resolveByPath`，且必须在删 worktree
+  **之前**解析——registry 走 realpath，目录没了就解析不出来。）
+
+### Added
+
+- **从你点的那条消息分叉**（参照 pi 的 `/tree` 语义）。消息尾部的分支控件是按"回合尾"
+  渲染的，浏览器半边唯一拿得到的手柄就是那个回合最后一条 assistant 消息的 `messageId`
+  （`dsh-client-ui-chat` 传的就是 `closing.finalNode.messageId`）。现在它一路传到宿主，
+  换算成边界：定位该消息所在事件 → 找它所属回合的 `turn/end` → 再用官方的尾部吸收规则
+  收尾。认不出的 id 静默退回"最新完成回合"，不挡路。返回体带 `boundarySource`
+  （`message` / `atSeq` / `latest-turn`）与 `boundarySeq`，便于回答"这条子会话为什么继承了这么多"。
+- **总览可操作**：详情面板给每条走向四个动作 —— 切到该会话 / 合并到主线 / 同步主线 /
+  拆除走向，对应新路由 `POST /branchman/api/{merge,sync,drop}`。拆除是两步确认
+  （一键删 worktree + 分支太危险），操作后重取树并把选中项指向刷新后的节点。
+  已合并的走向只留"拆除"，已拆除的不给动作。
+- **`branch_sync` 工具**：把主线吸收进走向（`main → worktree`），`branch_merge` 的反向。
+  走向跑得久、主线又往前走时用，正是"全量克隆很难同步"的那个痛点。
+- **`branch_fork` 现在真的从"当前对话"分叉**：`dsh-tools` 调 `tool.execute(args, exec)`，
+  `exec.agent` 就是调用方（`dsh-deja` 读同一处）。此前工具侧拿不到源会话，agent 开出来的
+  走向子会话**必然是空的**。现在默认取 `exec.agent.session.id` 与 `header.cwd`，
+  显式参数仍然优先。想克隆一条已有走向：`from: 'branchman/<名>'` 加上那条走向的会话。
+- 树节点新增 `workspaceId`；`branch_tree` 的 `capabilities` 新增 `workspaceRegistry`。
+
+### Tests
+
+- `test/seeded.mjs`：工作区记账（create + attach + 树节点记 id + drop 注销）、
+  按消息分叉（两个完整回合的源，`messageId` → 4 条 vs 不给 → 9 条 vs 幽灵 id → 9 条）、
+  agent 工具路径（`exec.agent` → 继承 9 条，不读就是 undefined）。
+  每条都验过"有牙齿"：临时还原修复后对应用例确实变红。
+- `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`。
+- 合计 **153 项断言**（tools 31 · seeded 42 · client 55 · manifest 25），四套件全绿。
+
 ## [0.1.1] — 2026-09-29
 
 按宿主官方插件规范（`dsh-agent-preset/skills/cordis-plugin-development`）逐条整改。
