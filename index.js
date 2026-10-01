@@ -62,6 +62,77 @@ const MAX_NAME = 60
 // the whole plugin from activating, taking the tools and the UI down with it.
 const optional = { sessionQuery: null, agents: null, agentDefaultModel: null, workspaceRegistry: null }
 
+// ────────────────────────────── node preview ──────────────────────────────
+// A direction's row has to be recognizable WITHOUT opening anything: the
+// branch name repeats vocabulary ("test", "开源作品") and a cold goal session's
+// host title is always the same boilerplate ("Reference Attachments for Goal
+// Objective"), so neither identifies the conversation. The tree therefore
+// carries a one-line content preview per session — the `/goal` objective when
+// the session has one, else the first genuine human message. Computed once per
+// node through sessionQuery and cached in tree.json (session logs are
+// append-only, so "first" never goes stale). The shapes here mirror
+// dsh-session-title-smart's reader: `goal/change` carries `data.goal.objective`
+// (operation 'clear' drops it), a real human message is `user/message` with
+// `data.source.kind === 'user'` and text blocks, and the synthesized goal
+// message text matches the boilerplate below.
+const GOAL_BOILERPLATE_RE = /^\s*reference attachments for (?:the )?goal objective\.?\s*$/i
+const previewInflight = new Map()
+
+const flattenText = value => String(value ?? '').replace(/\s+/g, ' ').trim()
+
+function derivePreview(events) {
+  if (!Array.isArray(events)) return null
+  let objective = null
+  let firstHuman = null
+  for (const event of events) {
+    if (event?.type === 'goal/change') {
+      const data = event.data ?? {}
+      if (data.operation === 'clear') { objective = null; continue }
+      const text = flattenText(data.goal?.objective)
+      if (text !== '') objective = text
+      continue
+    }
+    if (firstHuman === null && event?.type === 'user/message') {
+      const data = event.data ?? {}
+      if (data?.source?.kind !== 'user') continue
+      const blocks = Array.isArray(data.content) ? data.content : []
+      const text = flattenText(blocks
+        .filter(block => block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text)
+        .join(' '))
+      if (text === '' || GOAL_BOILERPLATE_RE.test(text)) continue
+      firstHuman = text
+    }
+    if (objective !== null && firstHuman !== null) break
+  }
+  const text = objective ?? firstHuman
+  if (text === null || text === '') return null
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text
+}
+
+async function ensurePreview(node) {
+  const key = node.name
+  const inflight = previewInflight.get(key)
+  if (inflight !== undefined) return inflight
+  const run = (async () => {
+    try {
+      if (typeof node.sessionId !== 'string' || node.sessionId === '') { node.preview = null; return }
+      const sessionQuery = optional.sessionQuery
+      if (sessionQuery === null) return // no capability: leave undefined, caller skips
+      const observed = await sessionQuery.observeSession(node.sessionId)
+      node.preview = derivePreview(observed?.events)
+    } catch {
+      // Archived-then-purged logs and unreadable sessions land here; record
+      // "tried, nothing" (null) so the next poll does not re-read the log.
+      node.preview = null
+    } finally {
+      previewInflight.delete(key)
+    }
+  })()
+  previewInflight.set(key, run)
+  return run
+}
+
 // ────────────────────────────── state ──────────────────────────────
 
 class TreeStore {
@@ -511,6 +582,16 @@ async function doTree(store) {
   // owns it — attaching a workspace alone would leave it just as absent. The
   // tree reports the flag instead of letting the direction look missing.
   const archived = archivedSessionIds()
+  // Fill missing previews once per node; the result is cached in tree.json, so
+  // the cost (one observeSession per cold node) is paid a single time, not per
+  // 4-second poll. Nodes without a sessionQuery capability never try.
+  if (optional.sessionQuery !== null) {
+    for (const node of store.state.nodes) {
+      if (node.preview !== undefined && node.preview !== null) continue
+      await ensurePreview(node)
+      if (node.preview !== undefined) await store.mutate(() => store.upsert({ name: node.name, preview: node.preview }))
+    }
+  }
   return {
     version: store.state.version,
     // Self-report so a support question is one call away: if defineTool is
@@ -534,6 +615,7 @@ async function doTree(store) {
     nodes: store.state.nodes.map(node => ({
       name: node.name, parentName: node.parentName, root: node.root, cwd: node.cwd, branch: node.branch,
       status: node.status, sessionId: node.sessionId, sessionTitle: node.sessionTitle,
+      preview: node.preview ?? null,
       messageCount: node.messageCount, lastActivityAt: node.lastActivityAt,
       inheritedEvents: node.inheritedEvents ?? 0,
       workspaceId: node.workspaceId ?? null,

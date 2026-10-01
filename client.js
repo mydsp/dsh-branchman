@@ -84,7 +84,8 @@ window.__ModuleLoader__.load({
         'det.lastActive': '最后活动 {time}',
         'det.path': '目录 {path}',
         'det.session': '会话 {id}',
-        'det.sideTitle': '对话侧栏标题：{title}',
+        'det.sessionTitle': '会话标题：{title}',
+        'det.preview': '对话开头：{preview}',
         'det.switch': '切到该会话',
         'det.stale': '已 3 天无活动 — 考虑 merge 或 drop',
         'det.missing': '这条走向还没有绑定会话：会话可能在别处被删除，或还没建立。',
@@ -185,7 +186,8 @@ window.__ModuleLoader__.load({
         'det.lastActive': 'last active {time}',
         'det.path': 'dir {path}',
         'det.session': 'session {id}',
-        'det.sideTitle': 'Sidebar title: {title}',
+        'det.sessionTitle': 'Session title: {title}',
+        'det.preview': 'Opening lines: {preview}',
         'det.switch': 'Switch to this session',
         'det.stale': 'No activity for 3 days — consider merge or drop',
         'det.missing': 'This direction has no session bound: it may have been deleted elsewhere, or never created.',
@@ -929,17 +931,26 @@ window.__ModuleLoader__.load({
         : node.sessionId === currentId
       const isHere = entry => isCurrent(entry.node)
 
-      // The sidebar shows session TITLES; the tree used to show only branch
-      // NAMES, so matching a direction to its conversation meant guessing from
-      // two different vocabularies. The list snapshot carries each session's
-      // title (the very string the sidebar renders — service.js reads the
-      // 'title' projection into byId), so every label now pairs the two:
-      // title first, branch name second.
+      // The sidebar shows session TITLES — but a cold goal session's title is
+      // always the same boilerplate, and an ARCHIVED direction is not in the
+      // sidebar at all. So titles alone cannot identify a row: the tree also
+      // carries a content preview per node (host: /goal objective or first
+      // genuine human message, cached in tree.json). Labels lead with whatever
+      // actually distinguishes the conversation:
+      //   usable title  → title first, preview second
+      //   boilerplate   → preview first, branch name second
+      //   nothing       → branch name, exactly like the old rows
+      const BOILERPLATE_TITLE_RE = /^\s*reference attachments for (?:the )?goal objective\.?(?:\s*\(\d+\))?\s*$/i
       const titleOf = sessionId => {
         if (typeof sessionId !== 'string' || sessionId === '') return null
         const row = deps.sessions?.list?.getSnapshot?.()?.byId?.[sessionId]
         const title = row?.title
         return typeof title === 'string' && title !== '' ? title : null
+      }
+      const previewOf = node => (typeof node?.preview === 'string' && node.preview !== '' ? node.preview : null)
+      const usableTitleOf = node => {
+        const title = titleOf(node.sessionId)
+        return title !== null && !BOILERPLATE_TITLE_RE.test(title) ? title : null
       }
       // Cold titles only land in the snapshot once the projections are pulled;
       // ask once per open (the 4s poll re-renders and picks them up as they
@@ -971,9 +982,10 @@ window.__ModuleLoader__.load({
           : entry.node.status === 'dropped'
             ? 'dsh-branchman-gnode is-dropped'
             : entry.node.status === 'merged' ? 'dsh-branchman-gnode is-merged' : 'dsh-branchman-gnode'
-        // Same pairing as the list rows: sidebar title on top, branch identity
-        // underneath — the graph is the "tree" the reader maps conversations to.
-        const nodeTitle = entry.main ? null : titleOf(entry.node.sessionId)
+        // Same pairing as the list rows: whatever distinguishes the
+        // conversation on top (usable title, else preview), identity underneath.
+        const nodeTitle = entry.main ? null : usableTitleOf(entry.node)
+        const nodePreview = entry.main ? null : previewOf(entry.node)
         return React.createElement(React.Fragment, { key: `${entry.node.name}-${entry.depth}-${entry.cx}` },
           entry.children.map(child => React.createElement('path', {
             key: `e-${child.node.name}`,
@@ -995,11 +1007,11 @@ window.__ModuleLoader__.load({
             : null,
           React.createElement('rect', { className: 'dsh-branchman-box', width: NODE_W, height: NODE_H, rx: 10 }),
           React.createElement('text', { className: 'dsh-branchman-t1', x: 12, y: 24 },
-            entry.main ? tx('ov.main') : clip(nodeTitle ?? entry.node.name, 17)),
+            entry.main ? tx('ov.main') : clip(nodeTitle ?? nodePreview ?? entry.node.name, 17)),
           React.createElement('text', { className: 'dsh-branchman-t2', x: 12, y: 42 },
             entry.main
               ? clip(entry.node.cwd ?? '', 22)
-              : clip(nodeTitle !== null ? entry.node.name : (entry.node.branch ?? ''), 22))),
+              : clip(nodeTitle !== null ? (nodePreview ?? entry.node.name) : entry.node.name, 22))),
           entry.children.map(renderNode),
         )
       }
@@ -1012,14 +1024,18 @@ window.__ModuleLoader__.load({
       const listRow = node => {
         const state = nodeState(node)
         const chips = rowChips(node, status[node.name])
-        // Title first (what the sidebar shows), branch name second — the pair
-        // is the whole point; when no title is known yet the row degrades to
-        // the branch name alone, exactly like before.
-        const title = titleOf(node.sessionId)
-        const primary = node.isMain === true ? tx('ov.mainRow') : (title ?? node.name)
+        // Lead with whatever distinguishes the conversation (usable title, else
+        // content preview); the second line is the other half of the pair, or
+        // the branch name when there is nothing else. No title/preview at all
+        // degrades to the old single-name row.
+        const title = usableTitleOf(node)
+        const preview = previewOf(node)
+        const primary = node.isMain === true ? tx('ov.mainRow') : (title ?? preview ?? node.name)
         const sub = node.isMain === true
-          ? title
-          : (title !== null && title !== node.name ? node.name : null)
+          ? titleOf(node.sessionId)
+          : primary === title
+            ? (preview ?? (title !== node.name ? node.name : null))
+            : node.name
         return React.createElement('button', {
           key: `row-${node.name}-${node.isMain === true ? 'main' : 'dir'}`,
           type: 'button',
@@ -1143,9 +1159,13 @@ window.__ModuleLoader__.load({
         const more = [
           React.createElement('div', { className: 'dsh-branchman-detpath', key: 'path' },
             tx('det.path', { path: node.cwd ?? '' })),
-          hasSession && titleOf(node.sessionId) !== null
+          previewOf(node) !== null
+            ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'preview' },
+              tx('det.preview', { preview: previewOf(node) }))
+            : null,
+          titleOf(node.sessionId) !== null
             ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'title' },
-              tx('det.sideTitle', { title: titleOf(node.sessionId) }))
+              tx('det.sessionTitle', { title: titleOf(node.sessionId) }))
             : null,
           hasSession
             ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'sid' },
@@ -1162,11 +1182,13 @@ window.__ModuleLoader__.load({
             React.createElement('span', { className: 'dsh-branchman-detname' },
               isMain ? tx('ov.mainDetail') : node.name),
             (() => {
-              // The exact string the sidebar shows for this conversation, right
-              // next to the branch name — the pairing the tree used to omit.
-              const title = titleOf(node.sessionId)
-              return title !== null && title !== node.name
-                ? React.createElement('span', { className: 'dsh-branchman-detsub' }, title)
+              // Whatever identifies this conversation next to the branch name:
+              // the session title when it says something, else the preview.
+              const title = usableTitleOf(node)
+              const preview = previewOf(node)
+              const sub = title ?? preview
+              return sub !== null
+                ? React.createElement('span', { className: 'dsh-branchman-detsub' }, sub)
                 : null
             })(),
             React.createElement('span', { className: `dsh-branchman-chip is-${state.kind}` }, tx(state.key))),
