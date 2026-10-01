@@ -649,6 +649,54 @@ async function doTree(store) {
       if (node.preview !== undefined) await store.mutate(() => store.upsert({ name: node.name, preview: node.preview }))
     }
   }
+  // ── 主线：现存的、未被分支过的对话本身 ──────────────────────────────
+  // 此前树上的"主线"只是仓库目录占位，而真正的树干——那些从没被分支过的
+  // 对话——从没出现过；走向的 parentSessionId 明明指着其中一条。这里经
+  // sessionQuery 列出每个已知仓库根下的主线对话（cwd 在根下且不在
+  // .branches 里；走向自己的会话住在 worktree，天然被排除），标题用批量
+  // 标题快照补齐（冷会话也有真标题），归档状态一并标记。每次轮询都重列：
+  // listSessions 走持久化索引，量级与侧栏同源。
+  const mainline = []
+  if (optional.sessionQuery !== null && typeof optional.sessionQuery.listSessions === 'function') {
+    try {
+      const roots = new Map()
+      for (const node of store.state.nodes) {
+        const root = String(node.root ?? '').replace(/[\\/]+$/, '')
+        if (root === '') continue
+        roots.set(root.toLowerCase(), root)
+      }
+      if (roots.size > 0) {
+        const records = await optional.sessionQuery.listSessions()
+        const bucket = new Map()
+        for (const record of records) {
+          const cwd = typeof record?.header?.cwd === 'string' ? record.header.cwd : null
+          if (cwd === null || /(^|[\\/])\.branches[\\/]/.test(cwd)) continue
+          const lower = cwd.toLowerCase()
+          let rootKey = null
+          for (const [key] of roots) {
+            if (lower.startsWith(key) && (rootKey === null || key.length > rootKey.length)) rootKey = key
+          }
+          if (rootKey === null) continue
+          if (!bucket.has(rootKey)) bucket.set(rootKey, [])
+          bucket.get(rootKey).push({ sessionId: record.header.id, cwd })
+        }
+        for (const [key, sessions] of bucket) {
+          const ids = sessions.map(entry => entry.sessionId)
+          let titles = []
+          try { titles = await optional.sessionQuery.readTitleSnapshots(ids) } catch { /* 标题缺省，客户端兜底 */ }
+          const entries = sessions.map((entry, index) => {
+            const raw = Array.isArray(titles) ? titles[index]?.title : undefined
+            return {
+              sessionId: entry.sessionId, cwd: entry.cwd,
+              archived: archived.has(entry.sessionId),
+              ...(typeof raw === 'string' && raw !== '' ? { title: raw.slice(0, 120) } : {}),
+            }
+          })
+          mainline.push({ root: roots.get(key), sessions: entries })
+        }
+      }
+    } catch { /* 会话查询不可用时主线缺席，走向照常渲染 */ }
+  }
   return {
     version: store.state.version,
     // Self-report so a support question is one call away: if defineTool is
@@ -669,6 +717,7 @@ async function doTree(store) {
       // buttons actually exist yet.
       operations: true,
     },
+    mainline,
     nodes: store.state.nodes.map(node => ({
       name: node.name, parentName: node.parentName, root: node.root, cwd: node.cwd, branch: node.branch,
       status: node.status, sessionId: node.sessionId, sessionTitle: node.sessionTitle,

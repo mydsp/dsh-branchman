@@ -6,6 +6,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **树干上树：主线对话本身就是节点**。此前"主线"只是仓库目录的占位——真正的树干
+  （现存的、从没被分支过的对话）从未出现，走向的 `parentSessionId` 明明指着其中一条。
+  现在宿主在树 API 里按仓库根列出主线对话（`sessionQuery.listSessions` + 批量标题快照
+  `readTitleSnapshots` 补真标题，归档状态一并标记），客户端把它们作为**树干节点**挂在
+  对应仓库的主线下，走向按 `parentSessionId` 长在它分叉时的那条对话下面。
+  树干节点详情只有一个动作（打开这条对话），无 git 行、无工程操作；
+  走向/树干/主线三层的标签与状态芯片各自独立（`state.trunk` / `state.trunkArchived`）。
+  没有分支过的仓库若有了走向，其树干会完整浮现——"现存的未分支对话"不再不可见。
+
 ### Fixed
 
 - **脏主线不再挡开走向**。此前"主线有未提交改动（N 项）。先提交或 stash，再开走向"把

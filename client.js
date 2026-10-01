@@ -118,6 +118,8 @@ window.__ModuleLoader__.load({
         'det.less': '收起',
         // One word per direction, shared by the list row and the detail header.
         'state.main': '主线',
+        'state.trunk': '主线对话',
+        'state.trunkArchived': '主线对话·已归档',
         'state.open': '进行中',
         'state.merged': '已合并',
         'state.archived': '已归档',
@@ -221,6 +223,8 @@ window.__ModuleLoader__.load({
         'det.more': 'More (dir / session id / branch)',
         'det.less': 'Less',
         'state.main': 'main',
+        'state.trunk': 'trunk conversation',
+        'state.trunkArchived': 'trunk (archived)',
         'state.open': 'active',
         'state.merged': 'merged',
         'state.archived': 'archived',
@@ -433,6 +437,11 @@ window.__ModuleLoader__.load({
     // conversation outranks the archived flag, which outranks "in progress".
     const nodeState = node => {
       if (node.isMain === true) return { kind: 'main', key: 'state.main' }
+      if (node.isTrunk === true) {
+        return node.archived === true
+          ? { kind: 'muted', key: 'state.trunkArchived' }
+          : { kind: 'ok', key: 'state.trunk' }
+      }
       if (node.status === 'dropped') return { kind: 'muted', key: 'state.dropped' }
       if (node.missingDir === true) return { kind: 'bad', key: 'state.missingDir' }
       if (node.sessionMissing === true) return { kind: 'warn', key: 'state.sessionMissing' }
@@ -446,7 +455,7 @@ window.__ModuleLoader__.load({
     // that this direction has not absorbed, then what it is ready to give back.
     const rowChips = (node, git) => {
       const chips = []
-      if (node.isMain === true || node.status === 'dropped') return chips
+      if (node.isMain === true || node.isTrunk === true || node.status === 'dropped') return chips
       if (git === undefined || git.error !== undefined) return chips
       const dirty = Number(git.dirty ?? 0)
       const behind = Number(git.behind ?? 0)
@@ -464,7 +473,7 @@ window.__ModuleLoader__.load({
     // global (one tree.json for every conversation), and hanging dsproject's
     // and fpga's directions under one "主线" quietly stole other repos into
     // whichever repo happened to be first.
-    const layoutTree = nodes => {
+    const layoutTree = (nodes, mainline = []) => {
       const list = Array.isArray(nodes) ? nodes : []
       // 空树也要有虚拟主线根（总览空态与自动选中都依赖它存在）。
       if (list.length === 0) {
@@ -479,6 +488,14 @@ window.__ModuleLoader__.load({
         const cwd = String(node.cwd ?? '')
         const at = cwd.search(/[\\/]\.branches(?:[\\/]|$)/)
         return at > 0 ? cwd.slice(0, at) : cwd
+      }
+      // 主线对话（树干）：宿主按仓库根列出的、从没被分支过的现存对话。键与
+      // 分组键同规（小写、去尾分隔符）。
+      const trunkByRoot = new Map()
+      for (const entry of Array.isArray(mainline) ? mainline : []) {
+        const key = String(entry?.root ?? '').replace(/[\\/]+$/, '').toLowerCase()
+        if (key === '' || !Array.isArray(entry.sessions)) continue
+        trunkByRoot.set(key, entry.sessions)
       }
       const groups = new Map()
       for (const node of list) {
@@ -500,10 +517,35 @@ window.__ModuleLoader__.load({
         // 父边只在本仓库内解析：parentName 指向别的仓库时，本仓库里它就是根。
         const repoRoots = groupNodes.filter(n => n.parentName === null || n.parentName === undefined || !byName.has(n.parentName))
         const rootPath = repoRootOf(groupNodes[0] ?? {})
+        // 树干：这条主线上现存的对话。走向按 parentSessionId 长在具体的树干
+        // 对话下——"从那条对话分叉"原本就是这个意思；对不上号的老走向退回
+        // 直接挂在主线下。
+        const trunkEntries = new Map()
+        const trunkChildren = []
+        for (const session of trunkByRoot.get(rootPath.toLowerCase()) ?? []) {
+          if (typeof session?.sessionId !== 'string' || session.sessionId === '') continue
+          trunkChildren.push({
+            node: {
+              name: session.sessionId, isTrunk: true, status: 'trunk',
+              sessionId: session.sessionId, cwd: session.cwd ?? rootPath, root: rootPath,
+              archived: session.archived === true,
+              ...(typeof session.title === 'string' && session.title !== '' ? { title: session.title } : {}),
+            },
+            main: false, children: [], cx: 0, cy: 0, depth: 0,
+          })
+          trunkEntries.set(session.sessionId, trunkChildren[trunkChildren.length - 1])
+        }
+        const mainChildren = [...trunkChildren]
+        for (const node of repoRoots) {
+          const entry = attach(node)
+          const parentTrunk = typeof node.parentSessionId === 'string' ? trunkEntries.get(node.parentSessionId) : undefined
+          if (parentTrunk !== undefined) parentTrunk.children.push(entry)
+          else mainChildren.push(entry)
+        }
         const root = {
           node: { name: `主线 · ${baseName(rootPath)}`, isMain: true, status: 'main', cwd: rootPath, root: rootPath },
           main: true,
-          children: repoRoots.map(attach),
+          children: mainChildren,
           cx: 0,
           cy: 0,
           depth: 0,
@@ -904,7 +946,7 @@ window.__ModuleLoader__.load({
         }
       }, [callApi, load])
 
-      const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes)), [data])
+      const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes, data.mainline)), [data])
 
       const fit = React.useCallback(() => {
         if (layout === null) return
@@ -1035,8 +1077,10 @@ window.__ModuleLoader__.load({
         return typeof title === 'string' && title !== '' ? title : null
       }
       const previewOf = node => (typeof node?.preview === 'string' && node.preview !== '' ? node.preview : null)
+      // 宿主直接给的字段标题（树干节点带，走向节点不带）：快照缺标题时的兜底。
+      const hostTitleOf = node => (typeof node?.title === 'string' && node.title !== '' ? node.title : null)
       const usableTitleOf = node => {
-        const title = titleOf(node.sessionId)
+        const title = titleOf(node.sessionId) ?? hostTitleOf(node)
         return title !== null && !BOILERPLATE_TITLE_RE.test(title) ? title : null
       }
       // Cold titles only land in the snapshot once the projections are pulled;
@@ -1060,7 +1104,10 @@ window.__ModuleLoader__.load({
           .filter(node => node.status !== 'dropped')
           .slice()
           .sort((a, b) => String(b.lastActivityAt ?? '').localeCompare(String(a.lastActivityAt ?? '')))[0]
-        setSelected(nodes.find(node => node.sessionId === currentId) ?? newest ?? layout.root.node)
+        // 自动选中：你所在的对话（走向或树干）优先，其次最近活跃的走向，
+        // 最后才是第一棵主线的根。flatAll 覆盖树干节点。
+        const flatAll = layout.groups.flatMap(group => group.nodes)
+        setSelected(flatAll.find(node => node.sessionId === currentId) ?? newest ?? flatAll[0] ?? layout.root.node)
       }, [layout, selected, nodes, currentId])
 
       const renderNode = entry => {
@@ -1071,8 +1118,12 @@ window.__ModuleLoader__.load({
             : entry.node.status === 'merged' ? 'dsh-branchman-gnode is-merged' : 'dsh-branchman-gnode'
         // Same pairing as the list rows: whatever distinguishes the
         // conversation on top (usable title, else preview), identity underneath.
+        // 树干节点例外：直接用宿主标题（快照缺冷标题时不至于显示裸 id）。
         const nodeTitle = entry.main ? null : usableTitleOf(entry.node)
         const nodePreview = entry.main ? null : previewOf(entry.node)
+        const trunkLabel = entry.node.isTrunk === true
+          ? (titleOf(entry.node.sessionId) ?? hostTitleOf(entry.node) ?? `会话 ${String(entry.node.sessionId).slice(5, 13)}`)
+          : null
         return React.createElement(React.Fragment, { key: `${entry.node.name}-${entry.depth}-${entry.cx}` },
           entry.children.map(child => React.createElement('path', {
             key: `e-${child.node.name}`,
@@ -1094,11 +1145,13 @@ window.__ModuleLoader__.load({
             : null,
           React.createElement('rect', { className: 'dsh-branchman-box', width: NODE_W, height: NODE_H, rx: 10 }),
           React.createElement('text', { className: 'dsh-branchman-t1', x: 12, y: 24 },
-            entry.main ? entry.node.name : clip(nodeTitle ?? nodePreview ?? entry.node.name, 17)),
+            entry.main ? entry.node.name : clip(trunkLabel ?? nodeTitle ?? nodePreview ?? entry.node.name, 17)),
           React.createElement('text', { className: 'dsh-branchman-t2', x: 12, y: 42 },
             entry.main
               ? clip(entry.node.cwd ?? '', 22)
-              : clip(nodeTitle !== null ? (nodePreview ?? entry.node.name) : entry.node.name, 22))),
+              : entry.node.isTrunk === true
+                ? tx('state.trunk')
+                : clip(nodeTitle !== null ? (nodePreview ?? entry.node.name) : entry.node.name, 22))),
           entry.children.map(renderNode),
         )
       }
@@ -1116,17 +1169,22 @@ window.__ModuleLoader__.load({
         // the branch name when there is nothing else. No title/preview at all
         // degrades to the old single-name row.
         //
-        // 主线不是一条对话——它是客户端合成的结构节点（仓库主目录，无
-        // sessionId），切到哪条对话它都在。所以：标签写明"仓库主目录"；
-        // 副行只在"你当前就在主线上"时显示当前对话标题（此刻它才是真信息），
-        // 其余时候留空，绝不挂一条可能已过时的对话标题误导人。
+        // 三类节点的标签来源不同：
+        //   主线（结构节点）→ '主线 · <目录名>'，无副行——它是地点不是对话；
+        //   树干（主线上现存的对话）→ 会话标题（快照→宿主→短 id 兜底）；
+        //   走向 → 可用标题优先、摘要次之，最后退回分支名。
         const title = usableTitleOf(node)
         const preview = previewOf(node)
-        const primary = node.isMain === true ? tx('ov.mainRow') : (title ?? preview ?? node.name)
-        const sub = node.isMain === true
-          ? (isCurrent(node) && currentId !== null && titleOf(currentId) !== null
-            ? tx('ov.onMain', { title: titleOf(currentId) })
-            : null)
+        const trunkLabel = node.isTrunk === true
+          ? (titleOf(node.sessionId) ?? hostTitleOf(node) ?? `会话 ${String(node.sessionId).slice(5, 13)}`)
+          : null
+        const primary = node.isMain === true
+          ? node.name
+          : node.isTrunk === true
+            ? trunkLabel
+            : (title ?? preview ?? node.name)
+        const sub = node.isMain === true || node.isTrunk === true
+          ? null
           : primary === title
             ? (preview ?? (title !== node.name ? node.name : null))
             : node.name
@@ -1173,6 +1231,7 @@ window.__ModuleLoader__.load({
         // 拆除 all carried equal weight and equal styling.
         const hasSession = typeof node.sessionId === 'string' && node.sessionId !== ''
         const isMain = node.isMain === true
+        const isTrunk = node.isTrunk === true
         const dropped = node.status === 'dropped'
         const opsReady = data?.capabilities?.operations === true
         const broken = node.missingDir === true || node.sessionMissing === true
@@ -1194,8 +1253,14 @@ window.__ModuleLoader__.load({
         }, label)
         const archivedIsPrimary = opsReady && hasSession && archived
         const openIsPrimary = !archivedIsPrimary && canSwitch && dropped !== true && broken !== true
+        // 树干是对话本身，不是工程操作的对象：只有一个动作——打开它。
         const actions = isMain
           ? null
+          : isTrunk === true
+            ? [canSwitch
+              ? act('switch', tx('det.open'), { primary: true, title: tx('det.open.title') })
+              : React.createElement('span', { key: 'trunk', className: 'dsh-branchman-note' }, tx('det.session', { id: node.sessionId }))]
+              .filter(Boolean)
           : opsReady === false
             // The browser half reloads on a page refresh, the host half only on a
             // full restart. Offering a control whose route does not exist yet
@@ -1277,10 +1342,14 @@ window.__ModuleLoader__.load({
         return React.createElement('div', { className: 'dsh-branchman-detail' },
           React.createElement('div', { className: 'dsh-branchman-dethead' },
             React.createElement('span', { className: 'dsh-branchman-detname' },
-              isMain ? tx('ov.mainDetail') : node.name),
+              node.isTrunk === true
+                ? (titleOf(node.sessionId) ?? hostTitleOf(node) ?? `会话 ${String(node.sessionId).slice(5, 13)}`)
+                : node.name),
             (() => {
               // Whatever identifies this conversation next to the branch name:
               // the session title when it says something, else the preview.
+              // 树干节点标题已在主名位置，副行跳过避免重复。
+              if (node.isTrunk === true) return null
               const title = usableTitleOf(node)
               const preview = previewOf(node)
               const sub = title ?? preview
@@ -1292,7 +1361,7 @@ window.__ModuleLoader__.load({
           facts.length === 0
             ? null
             : React.createElement('div', { className: 'dsh-branchman-detmeta' }, facts.join(' · ')),
-          isMain
+          isMain || isTrunk
             ? null
             : React.createElement('div', { className: 'dsh-branchman-detmeta' },
               git === undefined

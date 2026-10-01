@@ -88,6 +88,20 @@ const orphan = layoutTree([dir('X', 'not-there')])
 check('父节点不在列表时按根处理（不会崩、不会丢节点）', orphan.root.children.length === 1 && orphan.root.children[0].node.name === 'X')
 
 check('主线根的 cwd 取自第一条走向的 root', layoutTree([dir('A', null, { root: 'E:/repo' })]).root.node.cwd === 'E:/repo')
+
+// ── 树干：主线对话本身成为节点，走向按 parentSessionId 长在树干下 ──────────
+const MAINLINE = [{ root: 'E:/repo', sessions: [{ sessionId: 'session-trunk1', cwd: 'E:/repo', title: '备赛助手启动' }, { sessionId: 'session-trunk2', cwd: 'E:/repo', archived: true }] }]
+const trunked = layoutTree([dir('A', null, { parentSessionId: 'session-trunk1' })], MAINLINE)
+check('主线对话成为树干节点挂在主线下',
+  trunked.root.children[0]?.node.isTrunk === true && trunked.root.children[0]?.node.sessionId === 'session-trunk1',
+  JSON.stringify(trunked.root.children))
+check('走向长在它的父对话节点下',
+  trunked.root.children[0]?.children[0]?.node.name === 'A')
+const trunkNode = trunked.root.children[0]?.node
+check('树干节点带宿主标题与归档标记',
+  trunkNode !== undefined && trunkNode.title === '备赛助手启动')
+const trunked2 = layoutTree([dir('A')])
+check('没有 mainline 的仓库不受影响', trunked2.root.children[0]?.node.name === 'A')
 check('clip 截断并加省略号', clip('一二三四五六七八九十', 5) === '一二三四…', clip('一二三四五六七八九十', 5))
 check('clip 短串原样返回', clip('abc', 5) === 'abc')
 check('clip 容忍 null', clip(null, 5) === '')
@@ -283,7 +297,7 @@ check('已应用/已跳过之后，总览文案自动换成"已切换 + 怎么�
 // "点一个方框查看详情"，读起来就是"操作根本没做"。
 const at = needle => source.indexOf(needle)
 check('打开总览就自动选中一个节点（面板不再是空的）',
-  /setSelected\(nodes\.find\(node => node\.sessionId === currentId\) \?\? newest \?\? layout\.root\.node\)/.test(source))
+  /setSelected\(flatAll\.find\(node => node\.sessionId === currentId\) \?\? newest \?\? flatAll\[0\] \?\? layout\.root\.node\)/.test(source))
 // 依赖数组在 render 期求值，所以这个 effect 必须写在 nodes / currentId 之后 ——
 // 早一行就是 TDZ ReferenceError，整块界面白屏。
 check('自动选中声明在 nodes / currentId 之后（依赖数组在 render 期求值）',
