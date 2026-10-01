@@ -57,6 +57,7 @@ window.__ModuleLoader__.load({
         'ov.hint': '一个方框 = 一条走向（git worktree + 会话）。点方框看详情，拖动平移，滚轮缩放。',
         'ov.empty': '还没有走向。点下面的「⎇ 从当前对话开一条走向」开第一条。',
         'ov.anyConversation': '每条对话都能开走向 —— 上面的方框只是已经开过的那些。从你正在看的这条对话开：',
+        'ov.grouping': '侧栏把每条走向平铺成一个工作区、与仓库并列 —— 宿主的 Workspace 按「目录全等」记账，而走向的目录是 worktree，所以它只能自己占一格。想让它嵌在仓库下面：把「工作区」那一行的分组切成「按工作区树」。',
         'ov.branchHere': '⎇ 从当前对话开一条走向',
         'ov.branchHere.title': '从这条对话的最新完成回合分叉。想从某个更早的位置分叉，就用那条消息尾部的分支按钮。',
         'ov.here': '你在这里',
@@ -127,6 +128,7 @@ window.__ModuleLoader__.load({
         'ov.hint': 'One box = one direction (a git worktree + a session). Click a box for details, drag to pan, scroll to zoom.',
         'ov.empty': 'No directions yet. Click “⎇ Branch from this conversation” below to open the first one.',
         'ov.anyConversation': 'Every conversation can branch — the boxes above are only the ones already opened. Branch from the conversation you are reading:',
+        'ov.grouping': 'The sidebar lists every direction as a workspace side by side with its repo — the host accounts Workspaces by exact directory, and a direction’s directory is a worktree, so it has to own one. To nest it under the repo instead, switch the grouping on the “Workspaces” row to “by workspace tree”.',
         'ov.branchHere': '⎇ Branch from this conversation',
         'ov.branchHere.title': 'Forks from this conversation’s latest finished turn. To fork from an earlier point, use the branch button under that message.',
         'ov.here': 'you are here',
@@ -824,6 +826,11 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'dsh-branchman-act', title: tx('ov.branchHere.title'),
             onClick: () => { onClose(); setView({ kind: 'fork', props: { sessionId: currentId ?? undefined } }) },
           }, tx('ov.branchHere'))),
+        // Why a direction is a workspace of its own and not a child of its repo:
+        // the registry matches on exact cwd, so it cannot be anything else. The
+        // host's own answer is the tree grouping, so point at it here rather
+        // than letting the sidebar look like a flat pile of siblings.
+        React.createElement('div', { className: 'dsh-branchman-hint' }, tx('ov.grouping')),
         React.createElement('div', {
           className: 'dsh-branchman-canvas',
           ref: canvasRef,

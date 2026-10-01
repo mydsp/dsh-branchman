@@ -191,6 +191,10 @@ check('总览里能直接从当前对话开走向（不是只能看历史）',
   /tx\('ov\.branchHere'\)/.test(source) && /setView\(\{ kind: 'fork', props: \{ sessionId: currentId/.test(source))
 check('写明"每条对话都能开走向"（旧文案只指向消息尾按钮）',
   /tx\('ov\.anyConversation'\)/.test(source) && !/Branch to a new direction” to open the first one/.test(source))
+// 走向必然与仓库并列：注册表按目录全等记账，worktree 只能自己占一格。用户看到
+// 侧栏一列平铺会以为层级坏了 —— 所以把宿主的解法（按工作区树分组）写在地图里。
+check('解释"走向为什么与仓库并列"，并指向宿主的按工作区树分组',
+  /tx\('ov\.grouping'\)/.test(source) && /按工作区树/.test(source) && /目录全等/.test(source))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)
