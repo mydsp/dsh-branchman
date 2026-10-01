@@ -76,6 +76,7 @@ window.__ModuleLoader__.load({
         'ov.mainRow': '主线 · 仓库主目录',
         'ov.mainHint': '主线 = 仓库主目录这条结构线，不是某一条对话；● 标记你当前所在的位置。归档的走向会话不在侧栏里，只有这里能找到它们。',
         'ov.onMain': '当前对话：{title}',
+        'ov.moreConversations': '另有 {count} 条对话在主线上（未上树的日常对话，见侧栏）',
         'ov.viewList': '列表',
         'ov.viewGraph': '图形',
         'ov.groupingShort': '侧栏：按工作区树',
@@ -180,6 +181,7 @@ window.__ModuleLoader__.load({
         'ov.main': '◆ main (repo root)',
         'ov.mainDetail': 'Main line (the workspace’s main directory)',
         'ov.mainRow': 'Main line · repo root',
+        'ov.moreConversations': '{count} more conversations on this main line (see sidebar)',
         'ov.mainHint': 'The main line is the repo-root structural node, not a conversation; ● marks where you are. Archived direction sessions are not in the sidebar — only here.',
         'ov.onMain': 'Current conversation: {title}',
         'ov.viewList': 'List',
@@ -473,7 +475,7 @@ window.__ModuleLoader__.load({
     // global (one tree.json for every conversation), and hanging dsproject's
     // and fpga's directions under one "主线" quietly stole other repos into
     // whichever repo happened to be first.
-    const layoutTree = (nodes, mainline = []) => {
+    const layoutTree = (nodes, mainline = [], currentId = null) => {
       const list = Array.isArray(nodes) ? nodes : []
       // 空树也要有虚拟主线根（总览空态与自动选中都依赖它存在）。
       if (list.length === 0) {
@@ -520,10 +522,21 @@ window.__ModuleLoader__.load({
         // 树干：这条主线上现存的对话。走向按 parentSessionId 长在具体的树干
         // 对话下——"从那条对话分叉"原本就是这个意思；对不上号的老走向退回
         // 直接挂在主线下。
+        //
+        // 但树干不必逐条上树：这张图讲的是分支的故事，只有**分叉点**（有走向
+        // 从它长出来的对话）和你**当前所在**的对话是故事的一部分；其余日常
+        // 对话属于侧栏，它们的数量计在主线行上（另有 N 条），不逐条刷屏。
+        const forkParents = new Set(list
+          .map(n => (typeof n.parentSessionId === 'string' && n.parentSessionId !== '' ? n.parentSessionId : null))
+          .filter(Boolean))
+        const allTrunk = trunkByRoot.get(rootPath.toLowerCase()) ?? []
+        const visibleTrunk = allTrunk.filter(session =>
+          typeof session?.sessionId === 'string' && session.sessionId !== ''
+          && (forkParents.has(session.sessionId) || session.sessionId === currentId))
+        const hiddenConversations = allTrunk.length - visibleTrunk.length
         const trunkEntries = new Map()
         const trunkChildren = []
-        for (const session of trunkByRoot.get(rootPath.toLowerCase()) ?? []) {
-          if (typeof session?.sessionId !== 'string' || session.sessionId === '') continue
+        for (const session of visibleTrunk) {
           trunkChildren.push({
             node: {
               name: session.sessionId, isTrunk: true, status: 'trunk',
@@ -543,7 +556,7 @@ window.__ModuleLoader__.load({
           else mainChildren.push(entry)
         }
         const root = {
-          node: { name: `主线 · ${baseName(rootPath)}`, isMain: true, status: 'main', cwd: rootPath, root: rootPath },
+          node: { name: `主线 · ${baseName(rootPath)}`, isMain: true, status: 'main', cwd: rootPath, root: rootPath, hiddenConversations },
           main: true,
           children: mainChildren,
           cx: 0,
@@ -566,7 +579,9 @@ window.__ModuleLoader__.load({
           return entry
         }
         place(root, 0)
-        const flatten = entry => [entry.node, ...entry.children.flatMap(flatten)]
+        // 组节点清单不含主线根自己（flatten 会把它算进去——列表里"主线"曾因此
+        // 出现两次），只收真实的走向/树干节点，父先于子。
+        const flatten = entry => entry.children.flatMap(child => [child.node, ...flatten(child)])
         const lastActive = groupNodes.reduce((latest, n) => {
           const at = String(n.lastActivityAt ?? '')
           return at > latest ? at : latest
@@ -865,6 +880,19 @@ window.__ModuleLoader__.load({
       const dragRef = React.useRef(null)
       const cameraRef = React.useRef(camera)
       cameraRef.current = camera
+      // 画布实测尺寸：viewBox 跟着容器走（窗口/面板一变就重适配），不再写死
+      // 960×520——那是"窗口一变图形就不跟"的根源。
+      const [canvasSize, setCanvasSize] = React.useState({ w: VIEW_W, h: VIEW_H })
+      React.useEffect(() => {
+        const node = canvasRef.current
+        if (node === null || typeof React.ResizeObserver !== 'function') return undefined
+        const observer = new React.ResizeObserver(entries => {
+          const rect = entries[0]?.contentRect
+          if (rect !== undefined) setCanvasSize({ w: Math.max(1, rect.width), h: Math.max(1, rect.height) })
+        })
+        observer.observe(node)
+        return () => observer.disconnect()
+      }, [])
 
       // ── operations ──────────────────────────────────────────────────────
       // The overview is the one surface that knows every direction's state, so
@@ -946,22 +974,25 @@ window.__ModuleLoader__.load({
         }
       }, [callApi, load])
 
-      const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes, data.mainline)), [data])
+      const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes, data.mainline, currentId)), [data, currentId])
 
       const fit = React.useCallback(() => {
         if (layout === null) return
-        const k = Math.min(1.15, Math.min((VIEW_W - 48) / Math.max(1, layout.width), (VIEW_H - 48) / Math.max(1, layout.height)))
-        setCamera({ k, x: (VIEW_W - layout.width * k) / 2, y: (VIEW_H - layout.height * k) / 2 })
+        const k = Math.min(1.15, Math.min((canvasSize.w - 24) / Math.max(1, layout.width), (canvasSize.h - 24) / Math.max(1, layout.height)))
+        setCamera({ k, x: (canvasSize.w - layout.width * k) / 2, y: (canvasSize.h - layout.height * k) / 2 })
       }, [layout])
 
-      const zoom = React.useCallback(factor => {
+      // 缩放围绕一个锚点（滚轮=光标，按钮=画布中心）：图形在光标下不漂移。
+      const zoomAt = React.useCallback((factor, px, py) => {
         setCamera(previous => {
-          const k = Math.max(0.25, Math.min(2.5, previous.k * factor))
-          const cx = VIEW_W / 2
-          const cy = VIEW_H / 2
-          return { k, x: cx - (cx - previous.x) * (k / previous.k), y: cy - (cy - previous.y) * (k / previous.k) }
+          const k = Math.max(0.2, Math.min(2.5, previous.k * factor))
+          const scale = k / previous.k
+          return { k, x: px - (px - previous.x) * scale, y: py - (py - previous.y) * scale }
         })
       }, [])
+      const zoom = React.useCallback(factor => {
+        zoomAt(factor, canvasSize.w / 2, canvasSize.h / 2)
+      }, [zoomAt, canvasSize.w, canvasSize.h])
 
       // Unarchiving needs BOTH halves — the host route registers the direction's
       // workspace first and then unarchives, because unarchiving a session that
@@ -1003,11 +1034,13 @@ window.__ModuleLoader__.load({
         if (node === null) return undefined
         const onWheel = event => {
           event.preventDefault()
-          zoom(event.deltaY < 0 ? 1.12 : 1 / 1.12)
+          // 以光标为锚点缩放：指哪放大哪，图形不会朝屏幕中心漂。
+          const rect = node.getBoundingClientRect()
+          zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX - rect.left, event.clientY - rect.top)
         }
         node.addEventListener('wheel', onWheel, { passive: false })
         return () => node.removeEventListener('wheel', onWheel)
-      }, [zoom])
+      }, [zoomAt])
 
       const onPointerDown = event => {
         dragRef.current = { x: event.clientX, y: event.clientY, ...cameraRef.current }
@@ -1183,11 +1216,15 @@ window.__ModuleLoader__.load({
           : node.isTrunk === true
             ? trunkLabel
             : (title ?? preview ?? node.name)
-        const sub = node.isMain === true || node.isTrunk === true
-          ? null
-          : primary === title
-            ? (preview ?? (title !== node.name ? node.name : null))
-            : node.name
+        const sub = node.isMain === true
+          ? (Number(node.hiddenConversations ?? 0) > 0
+            ? tx('ov.moreConversations', { count: node.hiddenConversations })
+            : null)
+          : node.isTrunk === true
+            ? null
+            : primary === title
+              ? (preview ?? (title !== node.name ? node.name : null))
+              : node.name
         const rowHint = node.isMain === true ? tx('ov.mainHint') : undefined
         return React.createElement('button', {
           key: `row-${node.name}-${node.isMain === true ? 'main' : 'dir'}`,
@@ -1420,11 +1457,12 @@ window.__ModuleLoader__.load({
               onPointerMove,
               onPointerUp,
               onPointerCancel: onPointerUp,
-            }, nodes.length === 0
+              onDoubleClick: () => fit(),
+            }, nodes.length === 0 || layout === null
               ? React.createElement('div', { className: 'dsh-branchman-empty' }, tx('ov.empty'))
-              : layout === null ? null : React.createElement('svg', {
+              : React.createElement('svg', {
                 className: 'dsh-branchman-svg',
-                viewBox: `0 0 ${VIEW_W} ${VIEW_H}`,
+                viewBox: `0 0 ${canvasSize.w} ${canvasSize.h}`,
                 preserveAspectRatio: 'xMidYMid meet',
               }, React.createElement('g', {
                 transform: `translate(${Math.round(camera.x)} ${Math.round(camera.y)}) scale(${camera.k.toFixed(3)})`,

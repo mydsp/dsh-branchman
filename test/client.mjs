@@ -215,8 +215,9 @@ check('样式在 apply 内用 ctx.effect 注册并返回清理',
 check('走 locale 服务（register + bind）', /locale\.register\(NS, DICT\)/.test(source) && /bound = locale\.bind\(NS\)/.test(source))
 check('切会话走 uiWorkspace.openSession', /workspace\.openSession\(id\)/.test(source))
 check('未知会话先同步目录再打开（真实踩过 sessions.retain）', /syncCatalog/.test(source) && /ctx\.sessions\.refresh\?\.\(\)/.test(source))
-check('布局常量与宿主视图尺寸一致（VIEW_W/H 用于 viewBox）',
-  /viewBox: `0 0 \$\{VIEW_W\} \$\{VIEW_H\}`/.test(source))
+check('viewBox 跟随画布实测尺寸（窗口/面板一变就重适配，不再写死 960×520）',
+  /viewBox: `0 0 \$\{canvasSize\.w\} \$\{canvasSize\.h\}`/.test(source)
+  && /ResizeObserver/.test(source))
 check('滚轮缩放用非被动监听（React 的 onWheel 是 passive，preventDefault 无效）',
   /addEventListener\('wheel', onWheel, \{ passive: false \}\)/.test(source))
 check('拖动用 pointer 事件并带捕获', /setPointerCapture/.test(source))
