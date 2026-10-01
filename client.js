@@ -482,7 +482,14 @@ window.__ModuleLoader__.load({
       try {
         if (typeof localStorage === 'undefined') return
         if (localStorage.getItem(FOLLOW_MARK) !== null) return
-        const response = await callApi('tree')
+        // `callApi` always POSTs, and the tree route is `req.method === 'GET'`
+        // only — so this MUST be a plain GET. Getting it wrong made the whole
+        // migration a silent no-op (the marker never appeared, the sidebar never
+        // changed) — hence the explicit warn below instead of a bare catch.
+        const response = await fetch('/branchman/api/tree').then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        })
         const nodes = Array.isArray(response?.nodes) ? response.nodes : []
         const plan = planGrouping(localStorage.getItem(VIEW_KEY), nodes.length > 0)
         if (plan === null) return
@@ -495,7 +502,11 @@ window.__ModuleLoader__.load({
         if (plan.mark === 'applied' && typeof location !== 'undefined' && typeof location.reload === 'function') {
           location.reload()
         }
-      } catch { /* a sidebar preference is never worth a broken page */ }
+      } catch (error) {
+        // Still never break the page — but say so, because "swallowed" is how a
+        // wrong HTTP method hid here for a whole round.
+        console.warn('[branchman] could not switch the sidebar grouping:', error)
+      }
     }
     const groupingFollowed = () => {
       try {

@@ -238,5 +238,30 @@ check('自己完成那唯一一次刷新，且标记先写（不可能循环）'
 check('已应用/已跳过之后，总览文案自动换成"已切换 + 怎么改回来"',
   /tx\(groupingFollowed\(\) \? 'ov\.groupingDone' : 'ov\.grouping'\)/.test(source))
 
+// ── 客户端调用的路由必须真的存在，而且方法对得上 ──────────────────────────
+// 这条是血换来的：迁移代码用了 `callApi('tree')`，而 callApi 一律 POST，
+// 宿主的 `/branchman/api/tree` 只接受 `req.method === 'GET'` —— 于是整段迁移
+// 变成静默空操作：侧栏一动不动，localStorage 里连标记都没有，表现和"功能没做"
+// 完全一样。两侧的方法必须在这里对上。
+const hostSource = await readFile(join(ROOT, 'index.js'), 'utf8')
+const routesFor = method => new Set(
+  [...hostSource.matchAll(new RegExp(`path === '/branchman/api/([\\w-]+)' && req\\.method === '${method}'`, 'g'))]
+    .map(m => m[1]))
+const GET_ROUTES = routesFor('GET')
+const POST_ROUTES = routesFor('POST')
+check('宿主确实注册了 tree / status 的 GET 路由', GET_ROUTES.has('tree') && GET_ROUTES.has('status'),
+  [...GET_ROUTES].join(','))
+const viaCallApi = [...source.matchAll(/callApi\('([\w-]+)'/g)].map(m => m[1])
+check('callApi 只用于 POST 路由（它是 POST-only 的 helper）',
+  viaCallApi.every(path => POST_ROUTES.has(path)),
+  viaCallApi.filter(path => !POST_ROUTES.has(path)).join(','))
+const viaGet = [...source.matchAll(/fetch\('\/branchman\/api\/([\w-]+)'\)/g)].map(m => m[1])
+check('无参数的 fetch(...) 只用于 GET 路由（POST 会被宿主 404）',
+  viaGet.every(path => GET_ROUTES.has(path)), viaGet.filter(path => !GET_ROUTES.has(path)).join(','))
+check('读树读状态走 GET —— 迁移与总览都靠这条',
+  viaGet.includes('tree') && viaGet.includes('status'), viaGet.join(','))
+check('迁移不再静默失败（吞掉的异常正是它藏了一轮的原因）',
+  /console\.warn\('\[branchman\] could not switch the sidebar grouping:'/.test(source))
+
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)
