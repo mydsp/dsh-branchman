@@ -841,6 +841,13 @@ export async function apply(ctx, config) {
       },
     }),
     tool({
+      name: 'branch_unarchive',
+      description: 'Take a direction out of the archive AND register its workspace in one step. Use when a direction is invisible in the sidebar: an archived session is filtered out of every workspace group, so unarchiving alone would only move it from "hidden" to the ungrouped bucket. Idempotent.',
+      parameters: { name: { type: 'string', required: true, description: '走向名。' } },
+      output: TOOL_OUTPUT,
+      execute: args => doUnarchive(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+    }),
+    tool({
       name: 'branch_tree',
       description: 'Show the branch tree of engineering directions: which direction forked from which, worktree paths, branches and activity. Zero cost — read from local state.',
       parameters: {},

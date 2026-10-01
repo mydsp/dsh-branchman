@@ -182,6 +182,15 @@ check('已归档的走向能一键取消归档', /runUnarchive\(node\)/.test(sou
 // 只取消归档 = 从"到处看不见"变成「未分组」，所以必须由宿主一次做完两件事。
 check('取消归档走宿主路由（补工作区 + 取消归档是原子操作）',
   /callApi\('unarchive', \{ name: node\.name \}\)/.test(source) && !/uiWorkspace\.unarchiveSession/.test(source))
+// 总览是**每一条**对话的地图，不是"用过分支功能的那几条"的名册 —— 否则用户
+// 会以为只有方框里那一条能用分支。所以要标出"你在这里"，并在这里也能开走向。
+check('总览标出当前对话（你在这里 / 当前对话）',
+  /const isHere = entry =>/.test(source) && /tx\('ov\.here'\)/.test(source)
+  && /tx\('ov\.currentMain'\)/.test(source))
+check('总览里能直接从当前对话开走向（不是只能看历史）',
+  /tx\('ov\.branchHere'\)/.test(source) && /setView\(\{ kind: 'fork', props: \{ sessionId: currentId/.test(source))
+check('写明"每条对话都能开走向"（旧文案只指向消息尾按钮）',
+  /tx\('ov\.anyConversation'\)/.test(source) && !/Branch to a new direction” to open the first one/.test(source))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)

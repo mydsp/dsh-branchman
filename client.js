@@ -55,7 +55,12 @@ window.__ModuleLoader__.load({
         'msg.handoff': '[branchman 交接] 本走向「{name}」从「{source}」分叉，工作区={cwd}。要验证的假设：{brief}。请先浏览工作区文件再行动。',
         'ov.title': '工程走向总览',
         'ov.hint': '一个方框 = 一条走向（git worktree + 会话）。点方框看详情，拖动平移，滚轮缩放。',
-        'ov.empty': '还没有走向。点「⎇ 分支到新走向」开第一条。',
+        'ov.empty': '还没有走向。点下面的「⎇ 从当前对话开一条走向」开第一条。',
+        'ov.anyConversation': '每条对话都能开走向 —— 上面的方框只是已经开过的那些。从你正在看的这条对话开：',
+        'ov.branchHere': '⎇ 从当前对话开一条走向',
+        'ov.branchHere.title': '从这条对话的最新完成回合分叉。想从某个更早的位置分叉，就用那条消息尾部的分支按钮。',
+        'ov.here': '你在这里',
+        'ov.currentMain': '当前对话',
         'ov.none': '还没有走向',
         'ov.stats': '{total} 条走向 · {live} 条在用',
         'ov.close': '关闭',
@@ -120,7 +125,12 @@ window.__ModuleLoader__.load({
         'msg.handoff': '[branchman handoff] Direction “{name}” forks from “{source}”, workspace={cwd}. Hypothesis to verify: {brief}. Browse the workspace files before acting.',
         'ov.title': 'Direction overview',
         'ov.hint': 'One box = one direction (a git worktree + a session). Click a box for details, drag to pan, scroll to zoom.',
-        'ov.empty': 'No directions yet. Click “⎇ Branch to a new direction” to open the first one.',
+        'ov.empty': 'No directions yet. Click “⎇ Branch from this conversation” below to open the first one.',
+        'ov.anyConversation': 'Every conversation can branch — the boxes above are only the ones already opened. Branch from the conversation you are reading:',
+        'ov.branchHere': '⎇ Branch from this conversation',
+        'ov.branchHere.title': 'Forks from this conversation’s latest finished turn. To fork from an earlier point, use the branch button under that message.',
+        'ov.here': 'you are here',
+        'ov.currentMain': 'this conversation',
         'ov.none': 'No directions yet',
         'ov.stats': '{total} directions · {live} live',
         'ov.close': 'Close',
@@ -234,6 +244,11 @@ window.__ModuleLoader__.load({
 .dsh-branchman-act:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .dsh-branchman-act[disabled]{opacity:.5;cursor:default}
 .dsh-branchman-act.is-danger{border-color:var(--dsw-alias-label-error);color:var(--dsw-alias-label-error)}
+/* Where the reader is, and the branch action that must not be missing from a
+   map of "what has been branched so far". */
+.dsh-branchman-gnode.is-here .dsh-branchman-box{stroke:var(--dsw-alias-brand-primary);stroke-width:2.5}
+.dsh-branchman-here{font:600 10px Inter,system-ui,sans-serif;fill:var(--dsw-alias-brand-primary)}
+.dsh-branchman-ovadd{margin:0 0 10px}
 .dsh-branchman-note{font-size:11px;line-height:1.5;margin-top:6px;color:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-note.is-bad{color:var(--dsw-alias-label-error)}
 .dsh-branchman-note.is-ok{color:var(--dsw-alias-state-success-primary)}
@@ -650,6 +665,20 @@ window.__ModuleLoader__.load({
       const live = nodes.filter(node => node.status !== 'dropped').length
       const stats = nodes.length === 0 ? tx('ov.none') : tx('ov.stats', { total: nodes.length, live })
 
+      // The tree is GLOBAL — one file for every conversation — so without this
+      // the overview reads as "branching belongs to the conversations already
+      // in it", which is exactly backwards. Mark where the reader is, and offer
+      // the branch action from here so the map is a starting point and not a
+      // record of past use.
+      const currentId = (() => {
+        const snapshot = deps.sessions?.list?.getSnapshot?.() ?? {}
+        return typeof snapshot.current === 'string' && snapshot.current !== '' ? snapshot.current : null
+      })()
+      const directionIds = new Set(nodes.map(node => node.sessionId).filter(id => typeof id === 'string'))
+      const isHere = entry => entry.main === true
+        ? currentId !== null && !directionIds.has(currentId)
+        : entry.node.sessionId === currentId
+
       const renderNode = entry => {
         const cls = entry.main
           ? 'dsh-branchman-gnode is-main'
@@ -663,12 +692,18 @@ window.__ModuleLoader__.load({
             d: `M ${entry.cx + NODE_W / 2} ${entry.cy + NODE_H} C ${entry.cx + NODE_W / 2} ${(entry.cy + NODE_H + child.cy) / 2}, ${child.cx + NODE_W / 2} ${(entry.cy + NODE_H + child.cy) / 2}, ${child.cx + NODE_W / 2} ${child.cy}`,
           })),
           React.createElement('g', {
-            className: cls,
+            className: isHere(entry) ? `${cls} is-here` : cls,
             transform: `translate(${entry.cx} ${entry.cy})`,
             onClick: () => setSelected(entry.node),
             role: 'button',
             tabIndex: 0,
           },
+          // Above the box: the incoming edge lands at the box's top centre, so
+          // the left-aligned marker never collides with it.
+          isHere(entry)
+            ? React.createElement('text', { className: 'dsh-branchman-here', x: 2, y: -8 },
+              `● ${entry.main === true ? tx('ov.currentMain') : tx('ov.here')}`)
+            : null,
           React.createElement('rect', { className: 'dsh-branchman-box', width: NODE_W, height: NODE_H, rx: 10 }),
           React.createElement('text', { className: 'dsh-branchman-t1', x: 12, y: 24 },
             entry.main ? tx('ov.main') : clip(entry.node.name, 17)),
@@ -781,6 +816,14 @@ window.__ModuleLoader__.load({
           React.createElement('h3', null, tx('ov.title')),
           React.createElement('span', { className: 'dsh-branchman-ovstats' }, stats)),
         React.createElement('div', { className: 'dsh-branchman-hint' }, tx('ov.hint')),
+        // The map must not read as "these are the conversations that can
+        // branch". Every conversation can, so the action lives here too.
+        React.createElement('div', { className: 'dsh-branchman-actions dsh-branchman-ovadd' },
+          React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('ov.anyConversation')),
+          React.createElement('button', {
+            type: 'button', className: 'dsh-branchman-act', title: tx('ov.branchHere.title'),
+            onClick: () => { onClose(); setView({ kind: 'fork', props: { sessionId: currentId ?? undefined } }) },
+          }, tx('ov.branchHere'))),
         React.createElement('div', {
           className: 'dsh-branchman-canvas',
           ref: canvasRef,

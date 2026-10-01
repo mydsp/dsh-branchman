@@ -232,7 +232,7 @@ await writeFile(TREE, JSON.stringify({
 const mod = await import(pathToFileURL(join(PKG, 'index.js')).href)
 await mod.apply(ctx, { dataFile: TREE, defaultRoot: SCRATCH, gitPath: GIT })
 await new Promise(resolve => setTimeout(resolve, 40))
-check('六个工具全部注册（含 branch_sync）', tools.size === 6, [...tools.keys()].join(','))
+check('七个工具全部注册（含 branch_sync 与 branch_unarchive）', tools.size === 7, [...tools.keys()].join(','))
 check('激活时给老走向补登记工作区（否则升级后仍在「未分组」）',
   calls.some(c => c[0] === 'ws.create' && c[1] === legacyCwd && c[2] === `走向 ${LEGACY}`),
   JSON.stringify(calls.filter(c => c[0] === 'ws.create')))
