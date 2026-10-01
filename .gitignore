@@ -1,6 +1,10 @@
 # dependencies (the plugin itself has none, but a checkout may be pnpm-linked)
 node_modules/
 
+# TypeScript build output (compiled at release time, not committed)
+dist/
+dist-test/
+
 # test scratch: throwaway repos, shim packages, tree data
 test/.tmp/
 

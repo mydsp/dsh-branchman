@@ -39,7 +39,10 @@
     "test/"
   ],
   "scripts": {
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs",
+    "test:domain": "tsc -p tsconfig.test.json && node --test \"dist-test/test/domain/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json"
   },
   "repository": {
     "type": "git",
@@ -79,5 +82,9 @@
         "@deepseek-ai/dsh-client-ui-chat"
       ]
     }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
   }
 }
