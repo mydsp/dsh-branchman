@@ -8,6 +8,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **领域层重构（T1–T4，TypeScript）**：新增 `src/` 领域模型与宿主适配层，
+  稳定 ID、Windows 路径边界、图构建诊断、可恢复幂等操作与版本化 API。
+  详见 `docs/ACCEPTANCE.md` 与配套重构计划。生产 `index.js`/`client.js` 本轮未改。
+
+### Fixed
+
+- **树查询与修复的边界问题**（隔离复现，见 `dsh-audit/evidence.json`）：
+  同名跨仓库节点覆盖（B01）、无走向时隐藏已有会话（B02）、环形关系清空节点（B03）、
+  拖拽 NaN（B04）、观察租约未释放（B05）、路径前缀误归属（B06）、
+  disposed 误判已删除（B07）、HTTP fork 丢失 brief（B08）。
+  修复以纯模块 + 契约测试落地，尚未在真实桌面验收（`unverified`）。
+
 - **树干上树：主线对话本身就是节点**。此前"主线"只是仓库目录的占位——真正的树干
   （现存的、从没被分支过的对话）从未出现，走向的 `parentSessionId` 明明指着其中一条。
   现在宿主在树 API 里按仓库根列出主线对话（`sessionQuery.listSessions` + 批量标题快照
