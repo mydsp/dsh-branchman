@@ -1,6 +1,6 @@
 {
   "name": "dsh-branchman",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Tree-branching workspace plugin for DeepSeek Harness: open an engineering direction as one atom — a git worktree plus a child session that inherits the conversation, wired into a tree you can see.",
   "keywords": [
     "deepseek-harness",

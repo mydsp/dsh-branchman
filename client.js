@@ -71,6 +71,23 @@ window.__ModuleLoader__.load({
         'det.switch': '切到该会话',
         'det.stale': '已 3 天无活动 — 考虑 merge 或 drop',
         'det.missing': '这条走向还没有绑定会话：会话可能在别处被删除，或还没建立。',
+        'det.actions': '操作',
+        'det.merge': '合并到主线',
+        'det.merge.title': '把这条走向合回主线（走向内需先提交）',
+        'det.sync': '同步主线',
+        'det.sync.title': '把主线的最新提交吸收进这条走向',
+        'det.drop': '拆除走向',
+        'det.drop.title': '删除 worktree 与分支；未合并的成果会一起丢掉',
+        'det.dropConfirm': '确认拆除「{name}」？worktree 与分支会一并删除',
+        'det.dropYes': '确认拆除',
+        'det.cancel': '取消',
+        'det.busy': '执行中…',
+        'det.done.merge': '已合回主线。确认无误后可拆除 worktree。',
+        'det.done.sync': '已把主线的提交吸收进这条走向。',
+        'det.done.drop': '已拆除：worktree、分支与工作区登记都没了。',
+        'det.merged': '已合并',
+        'det.dropped': '已拆除',
+        'msg.wsWarning': '走向「{name}」已建立，但工作区登记有问题：{warning}',
       },
       en: {
         'action.branch': '⎇ Branch to a new direction',
@@ -111,6 +128,23 @@ window.__ModuleLoader__.load({
         'det.switch': 'Switch to this session',
         'det.stale': 'No activity for 3 days — consider merge or drop',
         'det.missing': 'This direction has no session bound: it may have been deleted elsewhere, or never created.',
+        'det.actions': 'Actions',
+        'det.merge': 'Merge into main',
+        'det.merge.title': 'Absorb this direction back into the main line (commit inside the direction first)',
+        'det.sync': 'Sync main in',
+        'det.sync.title': 'Absorb the main line’s latest commits into this direction',
+        'det.drop': 'Drop direction',
+        'det.drop.title': 'Delete the worktree and the branch; unmerged work goes with them',
+        'det.dropConfirm': 'Drop “{name}”? The worktree and the branch are deleted with it',
+        'det.dropYes': 'Drop it',
+        'det.cancel': 'Cancel',
+        'det.busy': 'working…',
+        'det.done.merge': 'Merged into the main line. Drop the worktree once you have confirmed it.',
+        'det.done.sync': 'The main line’s commits are now in this direction.',
+        'det.done.drop': 'Dropped: worktree, branch and workspace registration are gone.',
+        'det.merged': 'merged',
+        'det.dropped': 'dropped',
+        'msg.wsWarning': 'Direction “{name}” is created, but its workspace registration reported: {warning}',
       },
     }
     let bound = null
@@ -175,6 +209,18 @@ window.__ModuleLoader__.load({
 .dsh-branchman-link{border:0;background:transparent;color:var(--dsw-alias-link);font:600 11px Inter,system-ui,sans-serif;cursor:pointer;padding:2px 0}
 .dsh-branchman-empty{color:var(--dsw-alias-label-tertiary);font-size:12px;padding:16px}
 .dsh-branchman-stale{color:var(--dsw-alias-state-warn-label)}
+/* Detail-panel operations. The overview used to be a picture: everything a
+   direction waits for (merge / sync / drop) required going back to chat and
+   typing a tool call. Tokens are the ones already proven in this file. */
+.dsh-branchman-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center}
+.dsh-branchman-act{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;padding:4px 10px;font:600 11px Inter,system-ui,sans-serif;cursor:pointer}
+.dsh-branchman-act:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dsh-branchman-act:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.dsh-branchman-act[disabled]{opacity:.5;cursor:default}
+.dsh-branchman-act.is-danger{border-color:var(--dsw-alias-label-error);color:var(--dsw-alias-label-error)}
+.dsh-branchman-note{font-size:11px;line-height:1.5;margin-top:6px;color:var(--dsw-alias-label-tertiary)}
+.dsh-branchman-note.is-bad{color:var(--dsw-alias-label-error)}
+.dsh-branchman-note.is-ok{color:var(--dsw-alias-state-success-primary)}
 `
 
     // ── shared view state: the buttons open, the overlay renders ──────────
@@ -277,7 +323,14 @@ window.__ModuleLoader__.load({
       const res = await fetch('/branchman/api/fork', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, sourceSessionId: sourceId, sourceTitle, sourceCwd }),
+        body: JSON.stringify({
+          name, sourceSessionId: sourceId, sourceTitle, sourceCwd,
+          // The control belongs to the turn it is rendered under, and the only
+          // handle the browser half gets is that turn's final message id. The
+          // host turns it into the cut, so the child starts at THAT section
+          // instead of at the tail of the conversation.
+          messageId: typeof props?.messageId === 'string' ? props.messageId : undefined,
+        }),
       })
       const forked = await res.json()
       if (!res.ok) throw new Error(forked.error || `HTTP ${res.status}`)
@@ -320,6 +373,12 @@ window.__ModuleLoader__.load({
       }
       if (forked.seeded === false) {
         return { done: true, message: tx('msg.noSeeded', { name }) }
+      }
+      // Registration failing does not fail the direction, but the user is the
+      // only one who can see where the session landed — so say it rather than
+      // let it show up as a session under 未分组 with no explanation.
+      if (typeof forked.workspaceWarning === 'string' && forked.workspaceWarning !== '') {
+        return { done: true, message: tx('msg.wsWarning', { name, warning: forked.workspaceWarning }) }
       }
       return { done: true, message: null }
     }
@@ -416,6 +475,45 @@ window.__ModuleLoader__.load({
       const dragRef = React.useRef(null)
       const cameraRef = React.useRef(camera)
       cameraRef.current = camera
+
+      // ── operations ──────────────────────────────────────────────────────
+      // The overview is the one surface that knows every direction's state, so
+      // it is also the only place the three things a direction waits for can be
+      // one click away. Dropping is two-step: it deletes a worktree and a
+      // branch, and an accidental single click would take unmerged work with it.
+      const [busy, setBusy] = React.useState('')
+      const [confirmDrop, setConfirmDrop] = React.useState('')
+      const [note, setNote] = React.useState(null)
+
+      const callApi = React.useCallback(async (path, body) => {
+        const res = await fetch(`/branchman/api/${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const payload = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`)
+        return payload
+      }, [])
+
+      const runOp = React.useCallback(async (kind, node) => {
+        setBusy(kind)
+        setNote(null)
+        try {
+          await callApi(kind, { name: node.name })
+          const refreshed = await (await fetch('/branchman/api/tree')).json()
+          setData(refreshed)
+          // Selection is held by value, so re-point it at the refreshed node —
+          // otherwise the panel keeps showing the status the operation changed.
+          setSelected(previous => refreshed.nodes?.find(entry => entry.name === previous?.name) ?? previous)
+          setConfirmDrop('')
+          setNote({ kind: 'ok', text: tx(`det.done.${kind}`) })
+        } catch (e) {
+          setNote({ kind: 'bad', text: String(e.message || e) })
+        } finally {
+          setBusy('')
+        }
+      }, [callApi])
 
       const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes)), [data])
 
@@ -532,6 +630,32 @@ window.__ModuleLoader__.load({
         if (node.lastActivityAt !== undefined && node.lastActivityAt !== null) bits.push(new Date(node.lastActivityAt).toLocaleString())
         if (typeof node.sessionId === 'string' && node.sessionId !== '') bits.push(node.sessionId)
         const hasSession = typeof node.sessionId === 'string' && node.sessionId !== ''
+        const opButton = (kind, label, title, danger) => React.createElement('button', {
+          type: 'button',
+          className: danger === true ? 'dsh-branchman-act is-danger' : 'dsh-branchman-act',
+          disabled: busy !== '',
+          title,
+          onClick: () => { if (danger === true) { setConfirmDrop(node.name); setNote(null) } else runOp(kind, node) },
+        }, label)
+        const operations = node.isMain === true || node.status === 'dropped'
+          ? null
+          : React.createElement('div', { className: 'dsh-branchman-actions' },
+            React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.actions')),
+            node.status === 'open' ? opButton('sync', tx('det.sync'), tx('det.sync.title')) : null,
+            node.status === 'open' ? opButton('merge', tx('det.merge'), tx('det.merge.title')) : null,
+            confirmDrop === node.name
+              ? React.createElement(React.Fragment, null,
+                React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.dropConfirm', { name: node.name })),
+                React.createElement('button', {
+                  type: 'button', className: 'dsh-branchman-act is-danger', disabled: busy !== '',
+                  onClick: () => runOp('drop', node),
+                }, tx('det.dropYes')),
+                React.createElement('button', {
+                  type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
+                  onClick: () => setConfirmDrop(''),
+                }, tx('det.cancel')))
+              : opButton('drop', tx('det.drop'), tx('det.drop.title'), true),
+            busy === '' ? null : React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.busy')))
         return React.createElement('div', { className: 'dsh-branchman-detail' },
           React.createElement('div', { className: 'dsh-branchman-detname' },
             node.isMain === true ? tx('ov.mainDetail') : `${node.name} · ${node.status ?? ''}`),
@@ -543,7 +667,11 @@ window.__ModuleLoader__.load({
             ? React.createElement('button', {
               type: 'button', className: 'dsh-branchman-link', onClick: () => switchTo(node),
             }, tx('det.switch'))
-            : null)
+            : null,
+          operations,
+          note === null ? null : React.createElement('div', {
+            className: note.kind === 'ok' ? 'dsh-branchman-note is-ok' : 'dsh-branchman-note is-bad',
+          }, note.text))
       }
 
       return React.createElement('div', {

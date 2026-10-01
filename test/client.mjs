@@ -143,5 +143,22 @@ check('滚轮缩放用非被动监听（React 的 onWheel 是 passive，preventD
   /addEventListener\('wheel', onWheel, \{ passive: false \}\)/.test(source))
 check('拖动用 pointer 事件并带捕获', /setPointerCapture/.test(source))
 
+// ── 总览从"只能看"变成"能操作"，以及分叉点的精度 ─────────────────────────
+// 这一组盯的是需求本身：总览要能动手（合并/同步/拆除），分叉要落在点的那条
+// 消息上而不是对话末尾。两条都只有静态可查 —— 真机行为仍须在宿主页里验。
+check('总览走 /branchman/api/<path> 调宿主操作', /fetch\(`\/branchman\/api\/\$\{path\}`/.test(source))
+check('总览有合并到主线', /opButton\('merge', tx\('det\.merge'\)/.test(source))
+check('总览有同步主线（把主线的提交吸收进走向）', /opButton\('sync', tx\('det\.sync'\)/.test(source))
+check('总览有拆除走向', /opButton\('drop', tx\('det\.drop'\)/.test(source))
+check('拆除是两步确认（一键删 worktree 太危险）',
+  /setConfirmDrop\(node\.name\)/.test(source) && /confirmDrop === node\.name/.test(source) && /det\.dropYes/.test(source))
+check('操作成功后重取树并把选中项指到新节点（面板不能停在旧状态）',
+  /await callApi\(kind, \{ name: node\.name \}\)[\s\S]{0,240}setData\(refreshed\)[\s\S]{0,240}find\(entry => entry\.name === previous\?\.name\)/.test(source))
+check('操作按钮用 act 类且只吃主题令牌', /\.dsh-branchman-act\{/.test(source))
+check('已拆除的走向不给操作按钮', /node\.isMain === true \|\| node\.status === 'dropped'/.test(source))
+check('分支请求带上按钮所属消息的 id（否则只能从最新回合分叉）',
+  /messageId: typeof props\?\.messageId === 'string' \? props\.messageId : undefined/.test(source))
+check('工作区登记失败会如实告知用户', /msg\.wsWarning/.test(source) && /forked\.workspaceWarning/.test(source))
+
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)

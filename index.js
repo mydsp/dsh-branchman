@@ -60,7 +60,7 @@ const MAX_NAME = 60
 // host log said exactly: "cannot get property sessionQuery without inject").
 // Declaring them in `inject` would be worse: a name that never resolves keeps
 // the whole plugin from activating, taking the tools and the UI down with it.
-const optional = { sessionQuery: null, agents: null, agentDefaultModel: null }
+const optional = { sessionQuery: null, agents: null, agentDefaultModel: null, workspaceRegistry: null }
 
 // ────────────────────────────── state ──────────────────────────────
 
@@ -247,7 +247,37 @@ function latestCompletedPrefixBoundary(events) {
   return boundary
 }
 
-async function createChildSession(ctx, { worktree, sourceSessionId, boundarySeq }) {
+/**
+ * Fork from the point the clicked control sits under, not from the tail of the
+ * conversation.
+ *
+ * The per-message branch control is rendered at a turn tail with the turn's
+ * final assistant `messageId` (`dsh-client-ui-chat` passes
+ * `closing.finalNode.messageId`), so the message id is the only handle the
+ * browser half has on "that section of the conversation". Resolving it here
+ * keeps the resolution rule next to the boundary rule it feeds.
+ *
+ * The event carrying the id is followed to the `turn/end` that closes its turn,
+ * then the same trailing absorption as {@link latestCompletedPrefixBoundary} —
+ * so the inherited prefix is always a set of finished turns, never a half-run
+ * one. Undefined means "no such message, or its turn never finished"; the
+ * caller then falls back to the latest completed turn.
+ */
+function resolveMessageBoundary(events, messageId) {
+  if (typeof messageId !== 'string' || messageId === '') return undefined
+  const index = events.findIndex(event => event?.data?.message?.id === messageId || event?.data?.id === messageId)
+  if (index < 0) return undefined
+  const endIndex = events.findIndex((event, at) => at >= index && event.type === 'turn/end')
+  if (endIndex < 0) return undefined
+  let boundary = events[endIndex].seq
+  for (const next of events.slice(endIndex + 1)) {
+    if (next.type === 'turn/start' || (next.type === 'user/message' && next.surfaceOp === 'append') || next.type === 'agent/inbox/spliced') break
+    boundary = next.seq
+  }
+  return boundary
+}
+
+async function createChildSession(ctx, { worktree, sourceSessionId, boundarySeq, messageId }) {
   const childId = `session-${randomUUID()}`
   const hasSource = typeof sourceSessionId === 'string' && sourceSessionId !== ''
   const { sessionQuery, agents, agentDefaultModel } = optional
@@ -256,7 +286,8 @@ async function createChildSession(ctx, { worktree, sourceSessionId, boundarySeq 
       const observed = await sessionQuery.observeSession(sourceSessionId)
       const events = observed?.events
       if (Array.isArray(events) && events.length > 0) {
-        const requested = Number.isSafeInteger(boundarySeq) && events[boundarySeq]?.seq === boundarySeq ? boundarySeq : undefined
+        const explicit = Number.isSafeInteger(boundarySeq) && events[boundarySeq]?.seq === boundarySeq ? boundarySeq : undefined
+        const requested = explicit ?? resolveMessageBoundary(events, messageId)
         const boundary = requested ?? latestCompletedPrefixBoundary(events)
         if (Number.isSafeInteger(boundary) && events[boundary]?.seq === boundary) {
           const seed = buildForkSeed(events, boundary)
@@ -299,7 +330,14 @@ async function createChildSession(ctx, { worktree, sourceSessionId, boundarySeq 
             ...(setup === undefined ? {} : { setup }),
           })
           try { observed[Symbol.dispose]?.() } catch { /* observation release is best-effort */ }
-          return { sessionId: childId, seeded: true, inherited: boundary + 1, preset: agentPreset ?? null }
+          return {
+            sessionId: childId, seeded: true, inherited: boundary + 1, preset: agentPreset ?? null,
+            // Which rule chose the cut: an explicit seq (tree/API), the clicked
+            // message, or the latest finished turn. Reported so "why did this
+            // child inherit this much" is answerable without a debugger.
+            boundarySource: explicit !== undefined ? 'atSeq' : (requested === undefined ? 'latest-turn' : 'message'),
+            boundary,
+          }
         }
         // 宿主自己的 fork 在这种情况下是直接拒绝的（"has no completed turn to
         // fork from"）。这里选择降级而不是报错：走向仍然建好，只是子会话从空
@@ -316,7 +354,53 @@ async function createChildSession(ctx, { worktree, sourceSessionId, boundarySeq 
     ? ctx.sessions.create(childId, { meta: { cwd: worktree, ...(hasSource ? { parentSession: sourceSessionId } : {}) } })
     : null
   const id = created?.id ?? created?.sessionId ?? null
-  return { sessionId: id, seeded: false, inherited: 0 }
+  return { sessionId: id, seeded: false, inherited: 0, boundarySource: 'none', boundary: null }
+}
+
+/**
+ * Account the direction's child session in a Workspace of its own.
+ *
+ * A Workspace accounts a session by **exact canonical-cwd equality**
+ * (`@deepseek-ai/dsh-workspace`: `sessionPath(id) === record.path`, and
+ * `attachSession` rejects a cwd that "resolves to" anything else). A direction's
+ * child has its own cwd — the worktree — so it belongs to no workspace and the
+ * sidebar files it under 未分组, i.e. "no workspace". The Session Controller's
+ * own fork hits the same rule from the other side: it resolves the SOURCE's
+ * workspace and calls `workspace.attachSession(childId)` right after
+ * `agents.create` (the native child keeps the source cwd, so that attach
+ * validates). Here the workspace must be created first, at the worktree path.
+ *
+ * Registering it also nests the direction under the project in the "按工作区树"
+ * view, because that view nests by registered path prefix.
+ *
+ * Never fatal: a host without the registry still gets a working direction, and
+ * the returned `warning` is reported to the caller instead of being swallowed.
+ *
+ * @returns `{ workspaceId, warning }` — both optional.
+ */
+async function attachDirectionWorkspace(ctx, { worktree, name, childSessionId }) {
+  const registry = optional.workspaceRegistry
+  if (registry === null || registry === undefined || typeof registry.create !== 'function') {
+    return { warning: '宿主未提供 workspaceRegistry：走向会落在「未分组」而不是自己的工作区' }
+  }
+  let workspace
+  try {
+    workspace = await registry.create(worktree, `走向 ${name}`)
+  } catch (error) {
+    return { warning: `工作区登记失败（走向仍可用）：${error.message}` }
+  }
+  const workspaceId = workspace?.id === undefined || workspace?.id === null ? undefined : String(workspace.id)
+  if (typeof childSessionId !== 'string' || childSessionId === '') return { workspaceId }
+  try {
+    // The entity method is the one the Session Controller uses; the registry
+    // method is the defensive alternative for a shape that moves it.
+    if (typeof workspace?.attachSession === 'function') await workspace.attachSession(childSessionId)
+    else if (typeof registry.attachSession === 'function') await registry.attachSession(childSessionId)
+    else return { workspaceId, warning: '工作区已登记，但宿主没有 attachSession：会话要等下次启动才会归组' }
+  } catch (error) {
+    return { workspaceId, warning: `会话未挂进工作区（走向仍可用）：${error.message}` }
+  }
+  return { workspaceId }
 }
 
 async function doFork(ctx, store, config, args) {
@@ -353,6 +437,7 @@ async function doFork(ctx, store, config, args) {
   let childSessionId = null
   let child
   let node
+  let workspace = {}
   try {
     child = await createChildSession(ctx, {
       worktree,
@@ -361,8 +446,12 @@ async function doFork(ctx, store, config, args) {
       // history seed (a missing source degrades to an empty child).
       sourceSessionId: args?.currentSessionId ?? args?.sourceSessionId,
       boundarySeq: args?.boundarySeq,
+      // The per-message control sends the message it sits under; without it the
+      // child forks from the latest finished turn instead of that section.
+      messageId: args?.messageId,
     })
     childSessionId = child.sessionId
+    workspace = await attachDirectionWorkspace(ctx, { worktree, name, childSessionId: child.sessionId })
 
     // Tree edges need the parent DIRECTION, not just the parent session: when
     // the source conversation itself sits in a direction worktree, that
@@ -377,6 +466,7 @@ async function doFork(ctx, store, config, args) {
       parentSessionId: args?.currentSessionId ?? undefined, parentTitle: null,
       sessionId: childSessionId, sessionTitle: `走向 ${name}`,
       inheritedEvents: child.inherited,
+      workspaceId: workspace.workspaceId,
     }))
   } catch (error) {
     try {
@@ -390,15 +480,26 @@ async function doFork(ctx, store, config, args) {
     throw error
   }
 
+  if (workspace.warning !== undefined) ctx.logger?.warn?.(`branchman: ${workspace.warning}`)
+  // Where the cut came from, in words: a user clicking the control under an
+  // older message needs to see that the child starts THERE, not at the tail.
+  const cut = child.boundarySource === 'message'
+    ? `（从你点的那条消息所在回合分叉，seq ≤ ${child.boundary}）`
+    : child.boundarySource === 'atSeq' ? `（指定边界 seq ${child.boundary}）`
+      : child.boundarySource === 'latest-turn' ? '（从最新完成的回合分叉）' : ''
   return {
     name: node.name, branch: node.branch, cwd: node.cwd, sessionId: node.sessionId,
     seeded: child.seeded, inheritedEvents: child.inherited,
+    boundarySeq: child.boundary ?? null, boundarySource: child.boundarySource,
+    workspaceId: workspace.workspaceId ?? null,
+    ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
     hint: `走向「${name}」已建立。\n  目录: ${worktree}\n  分支: ${branch}`
       + (node.sessionId === null
         ? '\n  （子会话创建失败，但 worktree 可用——可手动指向该目录）'
         : child.seeded
-          ? `\n  新会话: ${node.sessionId}（继承前 ${child.inherited} 条事件，工作区=worktree 目录）`
-          : `\n  新会话: ${node.sessionId}（⚠ 未继承历史——新会话是空的，工作区=worktree 目录）`),
+          ? `\n  新会话: ${node.sessionId}（继承前 ${child.inherited} 条事件${cut}，工作区=worktree 目录，已在左侧归到「走向 ${name}」）`
+          : `\n  新会话: ${node.sessionId}（⚠ 未继承历史——新会话是空的，工作区=worktree 目录）`)
+      + (workspace.warning === undefined ? '' : `\n  ⚠ ${workspace.warning}`),
   }
 }
 
@@ -415,12 +516,16 @@ async function doTree(store) {
       sessionQuery: optional.sessionQuery !== null,
       agents: optional.agents !== null,
       agentDefaultModel: optional.agentDefaultModel !== null,
+      // Without this a direction cannot own a Workspace, and its session shows
+      // up under 未分组 instead of the tree.
+      workspaceRegistry: optional.workspaceRegistry !== null,
     },
     nodes: store.state.nodes.map(node => ({
       name: node.name, parentName: node.parentName, root: node.root, cwd: node.cwd, branch: node.branch,
       status: node.status, sessionId: node.sessionId, sessionTitle: node.sessionTitle,
       messageCount: node.messageCount, lastActivityAt: node.lastActivityAt,
       inheritedEvents: node.inheritedEvents ?? 0,
+      workspaceId: node.workspaceId ?? null,
     })),
   }
 }
@@ -475,6 +580,11 @@ async function doDrop(ctx, store, config, args) {
   const node = store.state.nodes.find(item => item.name === name && item.status !== 'dropped')
   if (node === undefined) throw new Error(`没有可拆除的走向「${name}」（已拆除或不存在）`)
   const gitPath = config.gitPath
+  // Resolve the Workspace registration BEFORE the worktree disappears: the
+  // registry canonicalizes through realpath, which cannot resolve a directory
+  // that is already gone. Without this the empty "走向 X" group would outlive
+  // the direction it named.
+  const workspaceId = await findDirectionWorkspaceId(node)
   const wtGit = node.cwd.replace(/\\/g, '/')
   try { await git(gitPath, node.root, ['worktree', 'remove', wtGit, '--force']) } catch { /* already gone */ }
   try { await git(gitPath, node.root, ['worktree', 'prune']) } catch { /* noop */ }
@@ -482,10 +592,79 @@ async function doDrop(ctx, store, config, args) {
   node.status = 'dropped'
   node.droppedAt = new Date().toISOString()
   await store.mutate(() => undefined)
-  return { dropped: name }
+  const warning = await dropDirectionWorkspace(workspaceId)
+  return { dropped: name, ...(warning === undefined ? {} : { workspaceWarning: warning }) }
+}
+
+/**
+ * The Workspace a direction owns: the id recorded at fork time, or — for nodes
+ * written by an earlier version — whatever the registry resolves for its
+ * worktree path right now.
+ */
+async function findDirectionWorkspaceId(node) {
+  if (typeof node.workspaceId === 'string' && node.workspaceId !== '') return node.workspaceId
+  const registry = optional.workspaceRegistry
+  if (registry === null || registry === undefined || typeof registry.resolveByPath !== 'function' || typeof node.cwd !== 'string') return undefined
+  try {
+    const entity = await registry.resolveByPath(node.cwd)
+    return entity?.id === undefined || entity?.id === null ? undefined : String(entity.id)
+  } catch {
+    // A missing directory is the normal case for an already-removed worktree.
+    return undefined
+  }
+}
+
+async function dropDirectionWorkspace(workspaceId) {
+  const registry = optional.workspaceRegistry
+  if (workspaceId === undefined || registry === null || registry === undefined || typeof registry.delete !== 'function') return undefined
+  try {
+    await registry.delete(workspaceId)
+    return undefined
+  } catch (error) {
+    return `工作区登记未注销（目录与会话记录仍在）：${error.message}`
+  }
+}
+
+/**
+ * Absorb the main line into a direction: the reverse of `branch_merge`, and the
+ * "同步最新信息" half of the original brief. A direction that has fallen behind
+ * main is exactly the case where a full clone would have been painful.
+ */
+async function doSync(ctx, store, config, args) {
+  const name = String(args?.name ?? '').trim()
+  const node = store.state.nodes.find(item => item.name === name && item.status === 'open')
+  if (node === undefined) throw new Error(`没有进行中的走向「${name}」`)
+  const gitPath = config.gitPath
+  const dirty = (await git(gitPath, node.cwd, ['status', '--porcelain'])).trim()
+  if (dirty !== '') throw new Error(`走向有未提交改动，先在其目录内提交（${dirty.split('\n').length} 项）`)
+  await ensureBranchesIgnored(node.root)
+  const from = typeof args?.from === 'string' && args.from !== '' ? args.from : 'main'
+  const output = await git(gitPath, node.cwd, ['merge', '--no-ff', from, '--no-edit', '-m', `merge: 走向 ${name} 同步 ${from}`])
+  node.lastActivityAt = new Date().toISOString()
+  await store.mutate(() => undefined)
+  return { synced: name, from, output: output.trim().slice(0, 400) }
 }
 
 // ─────────────────────────── plugin entry ────────────────────────────
+
+/**
+ * The conversation a tool call is running inside.
+ *
+ * `dsh-tools` calls `tool.execute(exec.arguments, exec)`, and `exec.agent` is
+ * the calling agent — the same handle `dsh-deja` reads (`agent.sessionId ??
+ * agent.session.id`, `agent.session.header.cwd`). Without it `branch_fork`
+ * could only ever create an EMPTY child, because nothing else in a tool call
+ * names the conversation to fork from.
+ */
+function callerOf(exec) {
+  const agent = exec?.agent
+  const session = agent?.session
+  const sessionId = typeof agent?.sessionId === 'string' && agent.sessionId !== ''
+    ? agent.sessionId
+    : (typeof session?.id === 'string' && session.id !== '' ? session.id : null)
+  const cwd = typeof session?.header?.cwd === 'string' && session.header.cwd !== '' ? session.header.cwd : null
+  return { sessionId, cwd }
+}
 
 function readBody(req, limit = 64 * 1024) {
   return new Promise((resolvePromise, reject) => {
@@ -520,6 +699,13 @@ export async function apply(ctx, config) {
       optional.agentDefaultModel = child.agentDefaultModel
       ctx.logger?.info?.('branchman: seeded-fork services resolved')
     })
+    // Resolved separately: adding a fourth name to the group above would make
+    // the whole seeded-fork path hostage to a service that a future host may
+    // rename, and the direction still forks without it.
+    ctx.inject(['workspaceRegistry'], (child) => {
+      optional.workspaceRegistry = child.workspaceRegistry
+      ctx.logger?.info?.('branchman: workspaceRegistry resolved — directions get their own workspace group')
+    })
   }
 
   // ── agent tools ──
@@ -538,14 +724,24 @@ export async function apply(ctx, config) {
     const disposers = [
   tool({
       name: 'branch_fork',
-      description: 'Open a new engineering direction from the current conversation: creates a git worktree (isolated workspace on its own branch) and a child session bound to it. Use when the user wants to try an alternative approach without disturbing the main line. The main repo must have no uncommitted changes.',
+      description: 'Open a new engineering direction from the current conversation: creates a git worktree (isolated workspace on its own branch) and a child session bound to it, carrying this conversation\'s finished history. Use when the user wants to try an alternative approach without disturbing the main line. The main repo must have no uncommitted changes.',
       parameters: {
         name: { type: 'string', required: true, description: '走向名，如 走向A-激进方案。也是目录与分支名。' },
-        root: { type: 'string', description: '仓库根目录。默认用配置的 defaultRoot。' },
-        from: { type: 'string', description: '起点 ref（默认 main）。' },
+        root: { type: 'string', description: '仓库根目录。默认取当前会话的工作目录。' },
+        from: { type: 'string', description: '起点 ref（默认 main）。也可以填 branchman/<已有走向>，等价于把那条走向整个克隆一条新的。' },
       },
       output: TOOL_OUTPUT,
-      execute: args => doFork(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+      execute: (args, exec) => {
+        // Fork from the conversation this call runs in: the source session and
+        // its cwd are what make the child inherit history and land in the right
+        // workspace group. An explicit argument still wins.
+        const caller = callerOf(exec)
+        return doFork(ctx, store, cfg, {
+          ...args,
+          currentSessionId: args?.currentSessionId ?? caller.sessionId ?? undefined,
+          sourceCwd: args?.sourceCwd ?? caller.cwd ?? undefined,
+        }).then(value => JSON.stringify(value, null, 2))
+      },
     }),
     tool({
       name: 'branch_tree',
@@ -567,6 +763,16 @@ export async function apply(ctx, config) {
       parameters: { name: { type: 'string', required: true, description: '走向名。' } },
       output: TOOL_OUTPUT,
       execute: args => doMerge(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
+    }),
+    tool({
+      name: 'branch_sync',
+      description: 'Absorb the main line into a direction (merge main → the direction worktree), the reverse of branch_merge. Use while a direction runs long and the main line has moved on. The direction must have no uncommitted changes.',
+      parameters: {
+        name: { type: 'string', required: true, description: '走向名。' },
+        from: { type: 'string', description: '要吸收的 ref（默认 main）。' },
+      },
+      output: TOOL_OUTPUT,
+      execute: args => doSync(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
     }),
     tool({
       name: 'branch_drop',
@@ -595,6 +801,12 @@ export async function apply(ctx, config) {
       parentSessionId: session?.header?.parentSession ?? undefined,
       sessionId: session.id, sessionTitle: session.title ?? null,
     })).catch(() => {})
+    // Same accounting as branch_fork: a direction session created any other way
+    // (a manual worktree, a restored log) must land in its own workspace group
+    // rather than 未分组. Idempotent, so racing branch_fork's own call is free.
+    attachDirectionWorkspace(ctx, { worktree: cwd, name, childSessionId: session.id })
+      .then(result => { if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: ${result.warning}`) })
+      .catch(() => {})
   })
 
   ctx.on('session/event', (session, event) => {
@@ -636,11 +848,44 @@ export async function apply(ctx, config) {
             // The source conversation's own cwd lets the host derive the parent
             // DIRECTION, so the rendered tree gets its edge.
             if (typeof body?.sourceCwd === 'string') forkArgs.sourceCwd = body.sourceCwd
+            // The per-turn control only knows the message it sits under; the
+            // host turns that into the cut. Without it the child forks from the
+            // latest finished turn — the whole conversation, not that section.
+            if (typeof body?.messageId === 'string' && body.messageId !== '') forkArgs.messageId = body.messageId
+            if (Number.isSafeInteger(body?.boundarySeq)) forkArgs.boundarySeq = body.boundarySeq
             // The host creates the child session itself (origin omitted, which
             // validateSessionHeader accepts) and binds it to the worktree cwd.
             // The client only opens what this route returns.
             const result = await doFork(ctx, store, cfg, forkArgs)
             return sendJson(res, 201, result)
+          } catch (error) {
+            return sendJson(res, 400, { error: error.message })
+          }
+        }
+        // The overview is a control surface, not a picture: merge, sync and drop
+        // are the three things a direction is ever waiting for, and sending the
+        // user back to chat to type a tool call is what made the old page
+        // read-only in practice.
+        if (path === '/branchman/api/merge' && req.method === 'POST') {
+          try {
+            const body = JSON.parse(await readBody(req))
+            return sendJson(res, 200, await doMerge(ctx, store, cfg, { name: body?.name }))
+          } catch (error) {
+            return sendJson(res, 400, { error: error.message })
+          }
+        }
+        if (path === '/branchman/api/sync' && req.method === 'POST') {
+          try {
+            const body = JSON.parse(await readBody(req))
+            return sendJson(res, 200, await doSync(ctx, store, cfg, { name: body?.name, from: body?.from }))
+          } catch (error) {
+            return sendJson(res, 400, { error: error.message })
+          }
+        }
+        if (path === '/branchman/api/drop' && req.method === 'POST') {
+          try {
+            const body = JSON.parse(await readBody(req))
+            return sendJson(res, 200, await doDrop(ctx, store, cfg, { name: body?.name }))
           } catch (error) {
             return sendJson(res, 400, { error: error.message })
           }
@@ -721,6 +966,8 @@ export const inject = ['webServer', 'sessions', 'tools']
 // Exported for the offline suites: the store's write invariant (concurrent
 // saves must never collide on one temp path) is the one thing that cannot be
 // exercised through the tools alone, because it depends on two writers landing
-// in the same tick.
-export { TreeStore }
+// in the same tick. The boundary resolver is exported for the same reason — it
+// decides how much history a child inherits, and a wrong cut is invisible in
+// the UI until the child has already been created.
+export { TreeStore, resolveMessageBoundary, latestCompletedPrefixBoundary }
 

@@ -85,6 +85,20 @@ const sourceEvents = [
 ]
 const EXPECTED_BOUNDARY = 4
 const EXPECTED_INHERITED = 5
+// 两个**完整回合**的源：验"从你点的那条消息分叉"。回合 1 结束于 seq 3，回合 2
+// 结束于 seq 8 —— 两者有明显差距，所以一旦插件忽略 messageId、退回"最新完成
+// 回合"，断言就会失败（不是靠时序碰巧通过）。
+const twoTurnEvents = [
+  { type: 'turn/start', seq: 0, time: 10, data: {} },
+  { type: 'user/message', seq: 1, time: 11, data: { id: 'user-1' } },
+  { type: 'assistant/message', seq: 2, time: 12, data: { message: { id: 'msg-1' } } },
+  { type: 'turn/end', seq: 3, time: 13, data: {} },
+  { type: 'turn/start', seq: 4, time: 14, data: {} },
+  { type: 'user/message', seq: 5, time: 15, data: { id: 'user-2' } },
+  { type: 'assistant/message', seq: 6, time: 16, data: { message: { id: 'msg-2' } } },
+  { type: 'step/end', seq: 7, time: 17, data: {} },
+  { type: 'turn/end', seq: 8, time: 18, data: {} },
+]
 let disposed = false
 
 const ctx = {
@@ -111,7 +125,7 @@ const ctx = {
             // session-fresh：只有未完成的回合，官方 fork 会直接拒绝
             events: sessionId === 'session-fresh'
               ? [{ type: 'turn/start', seq: 0, time: 900, data: {} }, { type: 'user/message', seq: 1, time: 901, data: {} }]
-              : sourceEvents,
+              : sessionId === 'session-two-turns' ? twoTurnEvents : sourceEvents,
             [Symbol.dispose]() { disposed = true },
           }
         },
@@ -124,6 +138,16 @@ const ctx = {
         create: async request => { calls.push(['agents.create', request]); return { id: request.sessionId } },
       },
       agentDefaultModel: { currentSelection: () => ({ provider: 'wb', model: 'cn:deepseek-v4.1-flash' }) },
+      // 真实 registry：create(path,title) 返回实体，实体自己带 attachSession；
+      // 官方控制器就是这么挂子会话的（`workspace.attachSession(childId)`）。
+      workspaceRegistry: {
+        create: async (path, title) => {
+          calls.push(['ws.create', path, title])
+          return { id: 'ws-1', path, title, attachSession: async id => { calls.push(['ws.attach', id]) } }
+        },
+        resolveByPath: async path => { calls.push(['ws.resolveByPath', path]); return { id: 'ws-1' } },
+        delete: async id => { calls.push(['ws.delete', id]); return true },
+      },
     })
   },
   // 官方 composeAgent 用的是 ctx.get("agentPresets")
@@ -137,7 +161,7 @@ const ctx = {
 
 const mod = await import(pathToFileURL(join(PKG, 'index.js')).href)
 await mod.apply(ctx, { dataFile: TREE, defaultRoot: SCRATCH, gitPath: GIT })
-check('五个工具全部注册', tools.size === 5, [...tools.keys()].join(','))
+check('六个工具全部注册（含 branch_sync）', tools.size === 6, [...tools.keys()].join(','))
 
 // ── fork with a source conversation ───────────────────────────────────────
 const forked = JSON.parse(await tools.get('branch_fork').execute({
@@ -174,9 +198,75 @@ check('返回体标注已继承历史', forked.seeded === true && forked.inherit
 check('worktree 目录已建立', existsSync(forked.cwd))
 check('提示语不再声称空会话', forked.hint.includes(`继承前 ${EXPECTED_INHERITED} 条事件`), forked.hint.split('\n').at(-1))
 
+// ── 工作区记账：会话落在「未分组」的那个 bug ──────────────────────────────
+// Workspace 按 cwd 全等记账（dsh-workspace: sessionPath(id) === record.path），
+// 走向的子会话 cwd 是 worktree，所以不建工作区就必然落到「未分组」。
+console.log('\n### 工作区记账')
+check('为 worktree 建了工作区', calls.some(c => c[0] === 'ws.create' && c[1] === forked.cwd && c[2] === `走向 ${NAME}`),
+  JSON.stringify(calls.filter(c => c[0] === 'ws.create')))
+check('子会话挂进该工作区（官方 fork 的 workspace.attachSession 步骤）',
+  calls.some(c => c[0] === 'ws.attach' && c[1] === forked.sessionId),
+  JSON.stringify(calls.filter(c => c[0] === 'ws.attach')))
+check('返回体带上 workspaceId', forked.workspaceId === 'ws-1', String(forked.workspaceId))
+check('登记成功时不产生告警', forked.workspaceWarning === undefined, String(forked.workspaceWarning))
+
+// ── 从"你点的那条消息"分叉（pi 的 /tree 语义） ───────────────────────────
+console.log('\n### 从点的那条消息分叉')
+calls.length = 0
+const forkedMsg = JSON.parse(await tools.get('branch_fork').execute({
+  name: '走向-精确分叉', root: SCRATCH, sourceSessionId: 'session-two-turns', sourceCwd: SCRATCH,
+  messageId: 'msg-1',
+}))
+let seededCall = calls.find(c => c[0] === 'agents.create')
+check('只继承到那条消息所在的回合（boundary=3 → 4 条）', seededCall?.[1]?.inheritedEventCount === 4,
+  String(seededCall?.[1]?.inheritedEventCount))
+check('返回体标注分叉点来源为 message', forkedMsg.boundarySource === 'message', String(forkedMsg.boundarySource))
+check('提示语说明是从点的那条消息分叉', forkedMsg.hint.includes('你点的那条消息'), forkedMsg.hint)
+
+calls.length = 0
+const forkedTail = JSON.parse(await tools.get('branch_fork').execute({
+  name: '走向-整个对话', root: SCRATCH, sourceSessionId: 'session-two-turns', sourceCwd: SCRATCH,
+}))
+seededCall = calls.find(c => c[0] === 'agents.create')
+check('不给 messageId 时退回最新完成回合（boundary=8 → 9 条）', seededCall?.[1]?.inheritedEventCount === 9,
+  String(seededCall?.[1]?.inheritedEventCount))
+check('返回体标注来源为 latest-turn', forkedTail.boundarySource === 'latest-turn', String(forkedTail.boundarySource))
+
+calls.length = 0
+const forkedGhost = JSON.parse(await tools.get('branch_fork').execute({
+  name: '走向-幽灵消息', root: SCRATCH, sourceSessionId: 'session-two-turns', sourceCwd: SCRATCH,
+  messageId: 'no-such-message',
+}))
+seededCall = calls.find(c => c[0] === 'agents.create')
+check('认不出的 messageId 静默退回最新完成回合（不挡路）', seededCall?.[1]?.inheritedEventCount === 9,
+  String(seededCall?.[1]?.inheritedEventCount))
+
 const tree = JSON.parse(await tools.get('branch_tree').execute({}))
 const node = tree.nodes.find(n => n.name === NAME)
 check('树节点记录继承事件数', node?.inheritedEvents === EXPECTED_INHERITED, JSON.stringify(node))
+check('树节点记住 workspaceId（drop 时才能注销）', node?.workspaceId === 'ws-1', String(node?.workspaceId))
+check('capabilities 自报 workspaceRegistry 可用', tree.capabilities?.workspaceRegistry === true, JSON.stringify(tree.capabilities))
+
+// ── agent 工具路径：从"调用它的那条对话"分叉 ─────────────────────────────
+// dsh-tools 调 tool.execute(args, exec)，exec.agent 就是调用方（dsh-deja 也
+// 读同一处）。不读它，branch_fork 建出来的永远是空子会话，"从当前对话开一条
+// 走向"这句话就是假的。
+console.log('\n### agent 工具从调用它的会话分叉')
+calls.length = 0
+const forkedTool = JSON.parse(await tools.get('branch_fork').execute(
+  { name: '走向-工具路径' },
+  {
+    name: 'branch_fork',
+    arguments: {},
+    agent: { sessionId: 'session-two-turns', session: { id: 'session-two-turns', header: { cwd: SCRATCH } } },
+  },
+))
+seededCall = calls.find(c => c[0] === 'agents.create')
+check('工具路径继承调用方会话的历史（9 条，不是空会话）', seededCall?.[1]?.inheritedEventCount === 9,
+  String(seededCall?.[1]?.inheritedEventCount))
+check('工具路径的 root 取自调用方 cwd', String(forkedTool.cwd ?? '').startsWith(SCRATCH), String(forkedTool.cwd))
+check('工具路径同样建了工作区并挂上子会话', calls.some(c => c[0] === 'ws.attach' && c[1] === forkedTool.sessionId),
+  JSON.stringify(calls.filter(c => c[0] === 'ws.attach')))
 
 // ── 源会话没有"已完成回合"：官方直接拒绝 fork，这里必须优雅降级 ────────────
 console.log('\n### 源会话没有已完成回合时')
@@ -188,6 +278,13 @@ check('仍把走向建好（不因无回合挡路）', /^session-/.test(String(f
 check('明确标注未继承历史', forked2.seeded === false && forked2.inheritedEvents === 0,
   JSON.stringify({ seeded: forked2.seeded, inherited: forked2.inheritedEvents }))
 check('退回裸会话创建', calls.some(c => c[0] === 'sessions.create'))
+
+// ── 拆除：工作区登记不能比走向活得久 ─────────────────────────────────────
+console.log('\n### 拆除走向时注销工作区')
+calls.length = 0
+await tools.get('branch_drop').execute({ name: NAME })
+check('drop 注销了工作区登记（不留空分组）', calls.some(c => c[0] === 'ws.delete' && c[1] === 'ws-1'),
+  JSON.stringify(calls.filter(c => c[0].startsWith('ws.'))))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 process.exit(fail === 0 ? 0 : 1)
