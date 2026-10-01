@@ -459,42 +459,83 @@ window.__ModuleLoader__.load({
     }
     // Tidy tree over the direction list: leaves take sequential slots, a parent
     // is centred over its children, and every level sinks by NODE_H + V_GAP.
-    // A synthetic main-line root is drawn explicitly, because a direction is
-    // literally a branch grown out of the main line.
+    // A synthetic main-line root is drawn per REPO, because a direction is
+    // literally a branch grown out of THAT repo's main line — the tree file is
+    // global (one tree.json for every conversation), and hanging dsproject's
+    // and fpga's directions under one "主线" quietly stole other repos into
+    // whichever repo happened to be first.
     const layoutTree = nodes => {
       const list = Array.isArray(nodes) ? nodes : []
-      const byName = new Map(list.map(n => [n.name, n]))
-      const kids = name => list.filter(n => n.parentName === name)
-      const roots = list.filter(n => n.parentName === null || n.parentName === undefined || !byName.has(n.parentName))
-      const attach = node => ({ node, main: false, children: kids(node.name).map(attach), cx: 0, cy: 0, depth: 0 })
-      const root = {
-        node: { name: '主线', isMain: true, status: 'main', cwd: roots[0]?.root ?? '', root: roots[0]?.root ?? '' },
-        main: true,
-        children: roots.map(attach),
-        cx: 0,
-        cy: 0,
-        depth: 0,
+      // 空树也要有虚拟主线根（总览空态与自动选中都依赖它存在）。
+      if (list.length === 0) {
+        const root = { node: { name: '主线', isMain: true, status: 'main', cwd: '', root: '' }, main: true, children: [], cx: 0, cy: 0, depth: 0 }
+        return { groups: [{ root, nodes: [], lastActive: '' }], root, width: NODE_W, height: NODE_H }
+      }
+      // 仓库根：优先节点自带的 root；没有就从 cwd 推导（<repo>/.branches/<名>
+      // → <repo>），测试数据走的正是这条路。
+      const repoRootOf = node => {
+        const explicit = String(node.root ?? '').replace(/[\\/]+$/, '')
+        if (explicit !== '') return explicit
+        const cwd = String(node.cwd ?? '')
+        const at = cwd.search(/[\\/]\.branches(?:[\\/]|$)/)
+        return at > 0 ? cwd.slice(0, at) : cwd
+      }
+      const groups = new Map()
+      for (const node of list) {
+        const key = repoRootOf(node).replace(/[\\/]+$/, '').toLowerCase()
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(node)
+      }
+      const baseName = root => {
+        const parts = String(root ?? '').split(/[\\/]/).filter(Boolean)
+        return parts.length > 0 ? parts[parts.length - 1] : '主线'
       }
       let cursor = 0
       let maxDepth = 0
-      const place = (entry, depth) => {
-        let cx
-        if (entry.children.length === 0) {
-          cx = cursor
-          cursor += NODE_W + H_GAP
-        } else {
-          const xs = entry.children.map(kid => place(kid, depth + 1).cx)
-          cx = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2
+      const groupLayouts = []
+      for (const [, groupNodes] of groups) {
+        const byName = new Map(groupNodes.map(n => [n.name, n]))
+        const kids = name => groupNodes.filter(n => n.parentName === name)
+        const attach = node => ({ node, main: false, children: kids(node.name).map(attach), cx: 0, cy: 0, depth: 0 })
+        // 父边只在本仓库内解析：parentName 指向别的仓库时，本仓库里它就是根。
+        const repoRoots = groupNodes.filter(n => n.parentName === null || n.parentName === undefined || !byName.has(n.parentName))
+        const rootPath = repoRootOf(groupNodes[0] ?? {})
+        const root = {
+          node: { name: `主线 · ${baseName(rootPath)}`, isMain: true, status: 'main', cwd: rootPath, root: rootPath },
+          main: true,
+          children: repoRoots.map(attach),
+          cx: 0,
+          cy: 0,
+          depth: 0,
         }
-        entry.cx = cx
-        entry.cy = depth * (NODE_H + V_GAP)
-        entry.depth = depth
-        if (depth > maxDepth) maxDepth = depth
-        return entry
+        const place = (entry, depth) => {
+          let cx
+          if (entry.children.length === 0) {
+            cx = cursor
+            cursor += NODE_W + H_GAP
+          } else {
+            const xs = entry.children.map(kid => place(kid, depth + 1).cx)
+            cx = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2
+          }
+          entry.cx = cx
+          entry.cy = depth * (NODE_H + V_GAP)
+          entry.depth = depth
+          if (depth > maxDepth) maxDepth = depth
+          return entry
+        }
+        place(root, 0)
+        const flatten = entry => [entry.node, ...entry.children.flatMap(flatten)]
+        const lastActive = groupNodes.reduce((latest, n) => {
+          const at = String(n.lastActivityAt ?? '')
+          return at > latest ? at : latest
+        }, '')
+        groupLayouts.push({ root, nodes: flatten(root), lastActive })
       }
-      place(root, 0)
+      // 活跃仓库排前面：总览是张地图，读者所在的那片应最先出现。
+      groupLayouts.sort((a, b) => String(b.lastActive).localeCompare(String(a.lastActive)))
       return {
-        root,
+        groups: groupLayouts,
+        root: groupLayouts[0]?.root ?? null,
         width: Math.max(NODE_W, cursor - H_GAP),
         height: Math.max(NODE_H, maxDepth * (NODE_H + V_GAP) + NODE_H),
       }
@@ -960,11 +1001,20 @@ window.__ModuleLoader__.load({
         const snapshot = deps.sessions?.list?.getSnapshot?.() ?? {}
         return typeof snapshot.current === 'string' && snapshot.current !== '' ? snapshot.current : null
       })()
+      // 当前对话自己的 cwd：它落在哪个仓库根下，那棵"主线"才是"你在这里"。
+      const currentCwd = (() => {
+        if (currentId === null) return null
+        const cwd = deps.sessions?.list?.getSnapshot?.()?.byId?.[currentId]?.cwd
+        return typeof cwd === 'string' && cwd !== '' ? cwd : null
+      })()
       const directionIds = new Set(nodes.map(node => node.sessionId).filter(id => typeof id === 'string'))
-      // Where the reader is. The main line "is current" precisely when the open
-      // conversation is not one of the directions.
+      // Where the reader is. A main line "is current" precisely when the open
+      // conversation lives under THAT repo root and is not one of the
+      // directions; a direction is current when it IS the open conversation.
       const isCurrent = node => node.isMain === true
-        ? currentId !== null && !directionIds.has(currentId)
+        ? (currentCwd !== null && typeof node.root === 'string' && node.root !== ''
+          && currentCwd.toLowerCase().startsWith(node.root.toLowerCase())
+          && !directionIds.has(currentId))
         : node.sessionId === currentId
       const isHere = entry => isCurrent(entry.node)
 
@@ -1044,7 +1094,7 @@ window.__ModuleLoader__.load({
             : null,
           React.createElement('rect', { className: 'dsh-branchman-box', width: NODE_W, height: NODE_H, rx: 10 }),
           React.createElement('text', { className: 'dsh-branchman-t1', x: 12, y: 24 },
-            entry.main ? tx('ov.main') : clip(nodeTitle ?? nodePreview ?? entry.node.name, 17)),
+            entry.main ? entry.node.name : clip(nodeTitle ?? nodePreview ?? entry.node.name, 17)),
           React.createElement('text', { className: 'dsh-branchman-t2', x: 12, y: 42 },
             entry.main
               ? clip(entry.node.cwd ?? '', 22)
@@ -1101,7 +1151,8 @@ window.__ModuleLoader__.load({
             }, tx(chip.key, chip.params)))),
           React.createElement('span', { className: `dsh-branchman-chip is-${state.kind}` }, tx(state.key)))
       }
-      const listRows = layout === null ? [] : [layout.root.node, ...nodes]
+      // 列表按仓库分组铺开：每棵主线后跟它自己的走向（父先于子）。
+      const listRows = layout === null ? [] : layout.groups.flatMap(group => [group.root.node, ...group.nodes])
 
       const detail = () => {
         if (selected === null) {
@@ -1308,7 +1359,7 @@ window.__ModuleLoader__.load({
                 preserveAspectRatio: 'xMidYMid meet',
               }, React.createElement('g', {
                 transform: `translate(${Math.round(camera.x)} ${Math.round(camera.y)}) scale(${camera.k.toFixed(3)})`,
-              }, renderNode(layout.root))))
+              }, layout.groups.map(group => renderNode(group.root)))))
             : React.createElement('div', { className: 'dsh-branchman-vlist' },
               nodes.length === 0
                 ? React.createElement('div', { className: 'dsh-branchman-empty' }, tx('ov.empty'))
