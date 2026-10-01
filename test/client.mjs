@@ -121,6 +121,41 @@ check('存的值读不出来 → 宁可不动，也不覆盖',
   planGrouping('{ not json', true)?.mark === 'skipped'
   && planGrouping('{ not json', true)?.value === null)
 
+// ── 一行一条走向：状态词与芯片（纯函数，真跑） ────────────────────────────
+// 列表行和详情面板共用这两个函数，所以它们不可能各说一套。优先级本身就是
+// 产品决策，值得钉死：目录没了比会话没了更严重，会话没了比归档更严重。
+const { nodeState, rowChips } = mod.__test
+check('nodeState 优先级：目录已失 > 对话已删 > 已归档 > 已合并 > 进行中',
+  nodeState({ missingDir: true, sessionMissing: true, archived: true, status: 'open' }).key === 'state.missingDir'
+  && nodeState({ sessionMissing: true, archived: true, status: 'open' }).key === 'state.sessionMissing'
+  && nodeState({ archived: true, status: 'open' }).key === 'state.archived'
+  && nodeState({ status: 'merged' }).key === 'state.merged'
+  && nodeState({ status: 'open' }).key === 'state.open',
+  JSON.stringify([nodeState({ missingDir: true }), nodeState({ archived: true }), nodeState({ status: 'merged' })]))
+check('nodeState：主线与已拆除各自成态（已拆除压过目录已失——它已经结束了）',
+  nodeState({ isMain: true, status: 'open' }).key === 'state.main'
+  && nodeState({ status: 'dropped', missingDir: true }).key === 'state.dropped')
+check('nodeState 的 kind 只有四档（列表圆点的颜色来源）',
+  ['main', 'ok', 'warn', 'bad', 'muted'].includes(nodeState({ missingDir: true }).kind)
+  && nodeState({ missingDir: true }).kind === 'bad'
+  && nodeState({ archived: true }).kind === 'warn'
+  && nodeState({ status: 'open' }).kind === 'ok'
+  && nodeState({ status: 'dropped' }).kind === 'muted'
+  && nodeState({ isMain: true }).kind === 'main')
+check('rowChips 顺序：未提交（阻塞合并）→ 落后（该吸收主线）→ 领先（能合回去）',
+  JSON.stringify(rowChips({ status: 'open' }, { ahead: 2, behind: 1, dirty: 3 }).map(c => c.key))
+    === JSON.stringify(['chip.dirty', 'chip.behind', 'chip.ahead']),
+  JSON.stringify(rowChips({ status: 'open' }, { ahead: 2, behind: 1, dirty: 3 })))
+check('rowChips：干净时出一个「干净」，而不是空（空看起来像没读到）',
+  JSON.stringify(rowChips({ status: 'open' }, { ahead: 0, behind: 0, dirty: 0 }).map(c => c.key))
+    === JSON.stringify(['chip.clean']))
+check('rowChips：git 读不到时不出芯片——不假装干净',
+  rowChips({ status: 'open' }, undefined).length === 0
+  && rowChips({ status: 'open' }, { error: 'not a repo' }).length === 0)
+check('rowChips：主线与已拆除不出芯片',
+  rowChips({ status: 'open', isMain: true }, { ahead: 1, behind: 1, dirty: 1 }).length === 0
+  && rowChips({ status: 'dropped' }, { ahead: 1, behind: 1, dirty: 1 }).length === 0)
+
 // ── locale dictionary ─────────────────────────────────────────────────────
 const { DICT } = mod.__test
 const zhKeys = Object.keys(DICT.zh).sort()
@@ -176,9 +211,9 @@ check('拖动用 pointer 事件并带捕获', /setPointerCapture/.test(source))
 // 这一组盯的是需求本身：总览要能动手（合并/同步/拆除），分叉要落在点的那条
 // 消息上而不是对话末尾。两条都只有静态可查 —— 真机行为仍须在宿主页里验。
 check('总览走 /branchman/api/<path> 调宿主操作', /fetch\(`\/branchman\/api\/\$\{path\}`/.test(source))
-check('总览有合并到主线', /opButton\('merge', tx\('det\.merge'\)/.test(source))
-check('总览有同步主线（把主线的提交吸收进走向）', /opButton\('sync', tx\('det\.sync'\)/.test(source))
-check('总览有拆除走向', /opButton\('drop', tx\('det\.drop'\)/.test(source))
+check('总览有合并到主线', /act\('merge', tx\('det\.merge'\)/.test(source))
+check('总览有同步主线（把主线的提交吸收进走向）', /act\('sync', tx\('det\.sync'\)/.test(source))
+check('总览有拆除走向', /act\('drop', tx\('det\.drop'\)/.test(source))
 check('拆除是两步确认（一键删 worktree 太危险）',
   /setConfirmDrop\(node\.name\)/.test(source) && /confirmDrop === node\.name/.test(source) && /det\.dropYes/.test(source))
 check('操作成功后重取树与 git 状态，并把选中项指到新节点（面板不能停在旧状态）',
@@ -188,25 +223,27 @@ check('操作成功后重取树与 git 状态，并把选中项指到新节点�
 check('详情面板显示 git 状态（领先/落后/未提交）',
   /loadStatus/.test(source) && /'\/branchman\/api\/status'/.test(source) && /tx\('det\.git', \{/.test(source))
 check('有未提交改动时禁用合并/同步并说明原因',
-  /opButton\('sync', tx\('det\.sync'\), tx\('det\.sync\.title'\), false, dirty\)/.test(source)
-  && /opButton\('merge', tx\('det\.merge'\), tx\('det\.merge\.title'\), false, dirty\)/.test(source)
+  /act\('sync', tx\('det\.sync'\), \{ blocked: dirty, title: tx\('det\.sync\.title'\) \}\)/.test(source)
+  && /act\('merge', tx\('det\.merge'\), \{ blocked: dirty, title: tx\('det\.merge\.title'\) \}\)/.test(source)
   && /tx\('det\.dirtyBlock'\)/.test(source))
 check('拆除不受脏工作区限制（设计上就是强删）',
-  /opButton\('drop', tx\('det\.drop'\), tx\('det\.drop\.title'\), true\)/.test(source))
+  /act\('drop', tx\('det\.drop'\), \{ danger: true, title: tx\('det\.drop\.title'\) \}\)/.test(source))
 check('status 读取失败不拖垮树（单独 try/catch）',
   /const loadStatus = React\.useCallback[\s\S]{0,700}catch \{[\s\S]{0,120}setStatus\(\{\}\)/.test(source))
 check('操作按钮用 act 类且只吃主题令牌', /\.dsh-branchman-act\{/.test(source))
-check('已拆除的走向不给操作按钮', /node\.status === 'dropped'/.test(source) && /opsReady === false/.test(source))
+check('已拆除的走向不给操作按钮',
+  /dropped !== true && node\.status === 'open'/.test(source) && /dropped === true\s*\n\s*\? null/.test(source))
 // 客户端刷新页面就更新、宿主半边只能重启才更新 —— 两个半边可能差一个版本，
 // 所以界面不能在路由还不存在时就把按钮摆出来（点了就是 404）。
 check('宿主还没加载新版本时不摆操作按钮，而是说明原因',
-  /const opsReady = data\?\.capabilities\?\.operations === true/.test(source) && /tx\('det\.opsPending'\)/.test(source))
-check('取消归档同样受 opsReady 门控', /node\.archived === true && opsReady/.test(source))
+  /const opsReady = data\?\.capabilities\?\.operations === true/.test(source)
+  && /opsReady === false[\s\S]{0,600}tx\('det\.opsPending'\)/.test(source))
+check('取消归档同样受 opsReady 门控', /archivedIsPrimary = opsReady && hasSession && archived/.test(source))
 check('分支请求带上按钮所属消息的 id（否则只能从最新回合分叉）',
   /messageId: typeof props\?\.messageId === 'string' \? props\.messageId : undefined/.test(source))
 check('工作区登记失败会如实告知用户', /msg\.wsWarning/.test(source) && /forked\.workspaceWarning/.test(source))
 // 归档：被归档的会话在任何分组里都被隐藏，所以"挂上工作区"不等于"看得见"。
-check('总览标出已归档的走向', /node\.archived === true && hasSession/.test(source) && /tx\('det\.archived'\)/.test(source))
+check('总览标出已归档的走向', /key: 'state\.archived'/.test(source) && /tx\('det\.archived'\)/.test(source))
 check('已归档的走向能一键取消归档', /runUnarchive\(node\)/.test(source) && /tx\('det\.unarchive'\)/.test(source))
 // 只取消归档 = 从"到处看不见"变成「未分组」，所以必须由宿主一次做完两件事。
 check('取消归档走宿主路由（补工作区 + 取消归档是原子操作）',
@@ -214,12 +251,15 @@ check('取消归档走宿主路由（补工作区 + 取消归档是原子操作�
 // 总览是**每一条**对话的地图，不是"用过分支功能的那几条"的名册 —— 否则用户
 // 会以为只有方框里那一条能用分支。所以要标出"你在这里"，并在这里也能开走向。
 check('总览标出当前对话（你在这里 / 当前对话）',
-  /const isHere = entry =>/.test(source) && /tx\('ov\.here'\)/.test(source)
+  /const isCurrent = node =>/.test(source) && /tx\('ov\.here'\)/.test(source)
   && /tx\('ov\.currentMain'\)/.test(source))
 check('总览里能直接从当前对话开走向（不是只能看历史）',
   /tx\('ov\.branchHere'\)/.test(source) && /setView\(\{ kind: 'fork', props: \{ sessionId: currentId/.test(source))
-check('写明"每条对话都能开走向"（旧文案只指向消息尾按钮）',
-  /tx\('ov\.anyConversation'\)/.test(source) && !/Branch to a new direction” to open the first one/.test(source))
+// 入口从"一段说明文字"变成了表头里常驻的按钮 —— 更强，因为它是个动作而不是
+// 一段要读的散文，而且不依赖选中任何东西。
+check('开走向的入口在表头常驻（不再靠一段说明文字）',
+  /className: 'dsh-branchman-ovhead'[\s\S]{0,1800}tx\('ov\.branchHere'\)/.test(source)
+  && !/tx\('ov\.anyConversation'\)/.test(source) && !/tx\('ov\.hint'\)/.test(source))
 // 走向必然与仓库并列：注册表按目录全等记账（mutate 每次写入都按 sessionPath(id)
 // === record.path 再过滤一遍，attachSession 直接抛 cwd resolves to），worktree
 // 所以只能自己占一格。要它"跟随父工作区"就只能靠宿主的按工作区树分组。
@@ -256,8 +296,8 @@ check('总览打开期间定时重读树（归档/删除没有事件可听）',
   /setInterval\(\(\) => \{ void load\(\) \}, 4000\)/.test(source)
   && /return \(\) => clearInterval\(timer\)/.test(source))
 check('手动删除对话 / 手动删目录都在面板里说明白',
-  /node\.sessionMissing === true \? React\.createElement[\s\S]{0,120}tx\('det\.sessionMissing'\)/.test(source)
-  && /node\.missingDir === true \? React\.createElement[\s\S]{0,120}tx\('det\.missingDir'\)/.test(source))
+  /if \(node\.sessionMissing === true\) warnings\.push\(tx\('det\.sessionMissing'\)\)/.test(source)
+  && /if \(node\.missingDir === true\) warnings\.push\(tx\('det\.missingDir'\)\)/.test(source))
 
 // ── 总览必须永远装得进窗口 ────────────────────────────────────────────────
 // 实机：窗口一小，总览的标题被切在顶上、按钮被切在底下。原因是卡片**没有
@@ -271,8 +311,28 @@ check('画布改成弹性（不再写死 58vh / min-height:340px）',
   /\.dsh-branchman-canvas\{flex:1 1 auto;min-height:150px/.test(source)
   && !/\.dsh-branchman-canvas\{height:58vh/.test(source)
   && !/min-height:340px/.test(source))
-check('详情面板自己滚，不把底部工具栏顶出去',
-  /\.dsh-branchman-detail\{[^}]*max-height:38%;overflow:auto/.test(source))
+check('详情面板自己是右栏并独立滚动（不把底部工具栏顶出去）',
+  /\.dsh-branchman-detail\{flex:0 1 380px[^}]*overflow:auto/.test(source)
+  && /\.dsh-branchman-ovbody\{[^}]*display:flex/.test(source))
+
+// ── 总览的形态：默认列表、行可选、动作分级 ────────────────────────────────
+// 用户原话"很难上手、功能乱七八糟"。根因是**把图当主界面**：三五个节点的树配
+// 平移缩放，多半是空白，还得先"适应窗口"才看得清；而两段说明文字、两组动作、
+// 一墙元数据，把上手成本全压在阅读上。
+check('默认列表视图，图降级成可切换的备选',
+  /React\.useState\('list'\)/.test(source) && /mode === 'graph'/.test(source)
+  && /tx\('ov\.viewList'\)/.test(source) && /tx\('ov\.viewGraph'\)/.test(source))
+check('列表行本身就是可点的按钮（方框从不说明这点）',
+  /const listRow = node =>/.test(source) && /dsh-branchman-vrow\$\{/.test(source))
+check('主操作最多一个：归档优先，其次"打开这条对话"',
+  /archivedIsPrimary = opsReady && hasSession && archived/.test(source)
+  && /openIsPrimary = !archivedIsPrimary && canSwitch && dropped !== true && broken !== true/.test(source)
+  && /\{ primary: true, title: tx\('det\.open\.title'\) \}/.test(source))
+check('参考信息（目录 / 会话 id / 分支）收进「更多」',
+  /const \[showMore, setShowMore\] = React\.useState\(false\)/.test(source)
+  && /tx\(showMore \? 'det\.less' : 'det\.more'\)/.test(source))
+check('优先级：状态词与芯片都由纯函数产出（行与面板不可能各说一套）',
+  /const state = nodeState\(node\)/.test(source) && /rowChips\(node, status\[node\.name\]\)/.test(source))
 check('底部按钮分组（缩放一组、刷新与关闭靠右）',
   /className: 'dsh-branchman-ovfoot'/.test(source) && /dsh-branchman-grow/.test(source))
 

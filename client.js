@@ -73,6 +73,11 @@ window.__ModuleLoader__.load({
         'ov.pickHint': '点一个方框查看详情',
         'ov.main': '◆ 主线',
         'ov.mainDetail': '主线（工作区主目录）',
+        'ov.mainRow': '主线',
+        'ov.viewList': '列表',
+        'ov.viewGraph': '图形',
+        'ov.groupingShort': '侧栏：按工作区树',
+        'ov.groupingShortOff': '侧栏：按工作区',
         'det.inherited': '继承 {count} 事件',
         'det.messages': '{count} 条消息',
         'det.branch': '分支 {branch}',
@@ -102,6 +107,23 @@ window.__ModuleLoader__.load({
         'det.sessionMissing': '⚠ 这条走向的对话已被删除（worktree 和分支都还在，提交也没丢）。可以「拆除走向」把它一并清掉，或另开一条走向接上这个目录。',
         'det.missingDir': '⚠ 这条走向的目录已经不在了——worktree 被插件之外的操作删掉了。合并和同步都会失败，只能「拆除走向」清掉登记。',
         'det.unarchive': '取消归档',
+        'det.unarchive.title': '取消归档，并补上它自己的工作区',
+        'det.open': '打开这条对话',
+        'det.open.title': '切到这条走向的会话继续工作',
+        'det.more': '更多（目录 / 会话 id / 分支）',
+        'det.less': '收起',
+        // One word per direction, shared by the list row and the detail header.
+        'state.main': '主线',
+        'state.open': '进行中',
+        'state.merged': '已合并',
+        'state.archived': '已归档',
+        'state.sessionMissing': '对话已删',
+        'state.missingDir': '目录已失',
+        'state.dropped': '已拆除',
+        'chip.ahead': '领先 {count}',
+        'chip.behind': '落后 {count}',
+        'chip.dirty': '未提交 {count}',
+        'chip.clean': '干净',
         'det.done.unarchive': '已取消归档：这条走向的会话现在会出现在自己的工作区分组里。',
         'det.git': 'git：领先主线 {ahead} · 落后 {behind} · 未提交 {dirty}',
         'det.gitLoading': 'git：读取中…',
@@ -151,6 +173,11 @@ window.__ModuleLoader__.load({
         'ov.pickHint': 'Click a box to see its details',
         'ov.main': '◆ main',
         'ov.mainDetail': 'Main line (the workspace’s main directory)',
+        'ov.mainRow': 'Main line',
+        'ov.viewList': 'List',
+        'ov.viewGraph': 'Graph',
+        'ov.groupingShort': 'Sidebar: by workspace tree',
+        'ov.groupingShortOff': 'Sidebar: by workspace',
         'det.inherited': '{count} inherited events',
         'det.messages': '{count} messages',
         'det.branch': 'branch {branch}',
@@ -180,6 +207,22 @@ window.__ModuleLoader__.load({
         'det.sessionMissing': '⚠ This direction’s conversation was deleted (the worktree, the branch and its commits are all still there). Drop the direction to clear it, or open a new direction onto this directory.',
         'det.missingDir': '⚠ This direction’s directory is gone — the worktree was removed outside the plugin. Merge and sync will fail; dropping is the way to clear the record.',
         'det.unarchive': 'Unarchive',
+        'det.unarchive.title': 'Take it out of the archive and give it its own workspace',
+        'det.open': 'Open this conversation',
+        'det.open.title': 'Switch to this direction’s session and carry on',
+        'det.more': 'More (dir / session id / branch)',
+        'det.less': 'Less',
+        'state.main': 'main',
+        'state.open': 'active',
+        'state.merged': 'merged',
+        'state.archived': 'archived',
+        'state.sessionMissing': 'conversation deleted',
+        'state.missingDir': 'directory gone',
+        'state.dropped': 'dropped',
+        'chip.ahead': '{count} ahead',
+        'chip.behind': '{count} behind',
+        'chip.dirty': '{count} uncommitted',
+        'chip.clean': 'clean',
         'det.done.unarchive': 'Unarchived: this direction’s session now shows up in its own workspace group.',
         'det.git': 'git: {ahead} ahead · {behind} behind · {dirty} uncommitted',
         'det.gitLoading': 'git: reading…',
@@ -235,7 +278,7 @@ window.__ModuleLoader__.load({
    the buttons off the bottom — the flex centring pushed the overflow both ways. */
 .dsh-branchman-overview{width:min(1040px,100%);padding:16px 18px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
 .dsh-branchman-overview>*{flex:0 0 auto}
-.dsh-branchman-ovhead{display:flex;align-items:baseline;gap:10px}
+.dsh-branchman-ovhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsh-branchman-ovstats{font:500 11px Inter,system-ui,sans-serif;color:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-overview .dsh-branchman-hint{margin:0}
 .dsh-branchman-canvas{flex:1 1 auto;min-height:150px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden;cursor:grab;touch-action:none}
@@ -251,7 +294,7 @@ window.__ModuleLoader__.load({
 .dsh-branchman-t1{font:600 12px Inter,system-ui,sans-serif;fill:var(--dsw-alias-label-primary)}
 .dsh-branchman-t2{font:11px Inter,system-ui,sans-serif;fill:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-gnode.is-dropped .dsh-branchman-t1{fill:var(--dsw-alias-label-dimmed)}
-.dsh-branchman-detail{font-size:12px;line-height:1.75;color:var(--dsw-alias-label-secondary);min-height:44px;max-height:38%;overflow:auto;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-branchman-detail{flex:0 1 380px;min-width:0;font-size:12px;line-height:1.75;color:var(--dsw-alias-label-secondary);overflow:auto;padding-left:14px;border-left:1px solid var(--dsw-alias-border-l2)}
 .dsh-branchman-detname{font-weight:600;color:var(--dsw-alias-label-primary)}
 .dsh-branchman-detmeta{color:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-detpath{color:var(--dsw-alias-label-dimmed);word-break:break-all}
@@ -271,10 +314,40 @@ window.__ModuleLoader__.load({
    map of "what has been branched so far". */
 .dsh-branchman-gnode.is-here .dsh-branchman-box{stroke:var(--dsw-alias-brand-primary);stroke-width:2.5}
 .dsh-branchman-here{font:600 10px Inter,system-ui,sans-serif;fill:var(--dsw-alias-brand-primary)}
-.dsh-branchman-ovadd{margin:0;padding-top:0;border-top:0}
+/* Master–detail: the browsable surface on the left, the selected direction on
+   the right. The list is the default because two to five directions do not need
+   a canvas to be understood; the graph is still there, as the alternate pane.
+   Every chip and dot on a row is decided by the pure nodeState/rowChips helpers,
+   so a row and the panel below can never disagree. */
+.dsh-branchman-ovbody{flex:1 1 auto;min-height:0;display:flex;gap:14px;align-items:stretch}
+.dsh-branchman-vlist{flex:1 1 auto;min-width:0;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.dsh-branchman-vrow{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;text-align:left;background:transparent;border:1px solid transparent;border-radius:8px;padding:8px 10px;cursor:pointer;color:var(--dsw-alias-label-primary)}
+.dsh-branchman-vrow:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-branchman-vrow.is-on{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-brand-primary)}
+.dsh-branchman-vrow.is-main{color:var(--dsw-alias-label-secondary)}
+.dsh-branchman-vdot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-dimmed)}
+.dsh-branchman-vdot.is-ok{background:var(--dsw-alias-state-success-primary)}
+.dsh-branchman-vdot.is-warn{background:var(--dsw-alias-state-warn-label)}
+.dsh-branchman-vdot.is-bad{background:var(--dsw-alias-label-error)}
+.dsh-branchman-vname{flex:1 1 auto;min-width:0;font:600 13px Inter,system-ui,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-branchman-vchips{flex:0 0 auto;display:flex;gap:4px;align-items:center}
+.dsh-branchman-heretag{flex:0 0 auto;font:600 10px Inter,system-ui,sans-serif;color:var(--dsw-alias-brand-primary);border:1px solid var(--dsw-alias-brand-primary);border-radius:999px;padding:0 6px}
+.dsh-branchman-chip{font:500 10.5px Inter,system-ui,sans-serif;border-radius:999px;padding:1px 7px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-1)}
+.dsh-branchman-chip.is-ok{color:var(--dsw-alias-state-success-primary)}
+.dsh-branchman-chip.is-warn{color:var(--dsw-alias-state-warn-label)}
+.dsh-branchman-chip.is-bad{color:var(--dsw-alias-label-error)}
+.dsh-branchman-tab{border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:4px 10px;font:600 11px Inter,system-ui,sans-serif;cursor:pointer}
+.dsh-branchman-tab:hover{color:var(--dsw-alias-label-primary)}
+.dsh-branchman-tab.is-on{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
+.dsh-branchman-dethead{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.dsh-branchman-more{margin-top:10px;border:0;background:transparent;color:var(--dsw-alias-link);font:600 11px Inter,system-ui,sans-serif;cursor:pointer;padding:2px 0}
+.dsh-branchman-morebox{margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-branchman-ovnote{font:500 11px Inter,system-ui,sans-serif;color:var(--dsw-alias-label-dimmed);cursor:default}
+.dsh-branchman-act.is-primary{border-color:var(--dsw-alias-button-primary-fill);background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
 /* View controls read as a toolbar, not as five equal buttons: the zoom group on
    the left, refresh and close on the right. */
 .dsh-branchman-ovfoot{display:flex;gap:8px;align-items:center;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-branchman-grow{flex:1 1 auto}
 .dsh-branchman-ovfoot .dsh-branchman-grow{flex:1 1 auto}
 .dsh-branchman-note{font-size:11px;line-height:1.5;margin-top:6px;color:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-note.is-bad{color:var(--dsw-alias-label-error)}
@@ -311,6 +384,38 @@ window.__ModuleLoader__.load({
     const clip = (text, max) => {
       const s = String(text ?? '')
       return s.length > max ? `${s.slice(0, max - 1)}…` : s
+    }
+
+    // One word for "how is this direction doing", shared by the list row and the
+    // detail header so the two can never disagree about it. Returns a locale KEY
+    // (not text) so the offline suite can test the precedence without a locale.
+    // Order matters: a missing directory outranks everything, and a deleted
+    // conversation outranks the archived flag, which outranks "in progress".
+    const nodeState = node => {
+      if (node.isMain === true) return { kind: 'main', key: 'state.main' }
+      if (node.status === 'dropped') return { kind: 'muted', key: 'state.dropped' }
+      if (node.missingDir === true) return { kind: 'bad', key: 'state.missingDir' }
+      if (node.sessionMissing === true) return { kind: 'warn', key: 'state.sessionMissing' }
+      if (node.archived === true) return { kind: 'warn', key: 'state.archived' }
+      if (node.status === 'merged') return { kind: 'ok', key: 'state.merged' }
+      return { kind: 'ok', key: 'state.open' }
+    }
+
+    // The handful of facts worth putting on a row, in the order they matter:
+    // uncommitted work first (it blocks merge/sync), then what the main line has
+    // that this direction has not absorbed, then what it is ready to give back.
+    const rowChips = (node, git) => {
+      const chips = []
+      if (node.isMain === true || node.status === 'dropped') return chips
+      if (git === undefined || git.error !== undefined) return chips
+      const dirty = Number(git.dirty ?? 0)
+      const behind = Number(git.behind ?? 0)
+      const ahead = Number(git.ahead ?? 0)
+      if (dirty > 0) chips.push({ kind: 'warn', key: 'chip.dirty', params: { count: dirty } })
+      if (behind > 0) chips.push({ kind: 'muted', key: 'chip.behind', params: { count: behind } })
+      if (ahead > 0) chips.push({ kind: 'ok', key: 'chip.ahead', params: { count: ahead } })
+      if (dirty === 0 && behind === 0 && ahead === 0) chips.push({ kind: 'muted', key: 'chip.clean' })
+      return chips
     }
     // Tidy tree over the direction list: leaves take sequential slots, a parent
     // is centred over its children, and every level sinks by NODE_H + V_GAP.
@@ -619,6 +724,14 @@ window.__ModuleLoader__.load({
       const [data, setData] = React.useState(null)
       const [error, setError] = React.useState('')
       const [selected, setSelected] = React.useState(null)
+      // The graph used to be the whole surface. For the two-to-five directions a
+      // repository actually has, a drawn tree with pan and zoom is mostly empty
+      // space that has to be "fitted" before it is readable — so the list is the
+      // default and the graph is the alternate view.
+      const [mode, setMode] = React.useState('list')
+      // Reference material (path, session id, branch ref) is behind 更多 — it is
+      // not what you open this dialog to read.
+      const [showMore, setShowMore] = React.useState(false)
       const [camera, setCamera] = React.useState({ x: 0, y: 0, k: 1 })
       const canvasRef = React.useRef(null)
       const dragRef = React.useRef(null)
@@ -803,9 +916,12 @@ window.__ModuleLoader__.load({
         return typeof snapshot.current === 'string' && snapshot.current !== '' ? snapshot.current : null
       })()
       const directionIds = new Set(nodes.map(node => node.sessionId).filter(id => typeof id === 'string'))
-      const isHere = entry => entry.main === true
+      // Where the reader is. The main line "is current" precisely when the open
+      // conversation is not one of the directions.
+      const isCurrent = node => node.isMain === true
         ? currentId !== null && !directionIds.has(currentId)
-        : entry.node.sessionId === currentId
+        : node.sessionId === currentId
+      const isHere = entry => isCurrent(entry.node)
 
       // The operations live in the detail panel, and the panel used to stay
       // empty until a box was clicked — so opening the overview showed a picture
@@ -857,6 +973,34 @@ window.__ModuleLoader__.load({
         )
       }
 
+      // A row is the whole story at a glance: state dot, name, where you are,
+      // what git says, and one word for the state. Everything on it is decided
+      // by the pure helpers above, so the row and the detail panel cannot drift
+      // apart. Rows are buttons: selecting one is the only way to get actions,
+      // and a bare box in a canvas never advertised that.
+      const listRow = node => {
+        const state = nodeState(node)
+        const chips = rowChips(node, status[node.name])
+        return React.createElement('button', {
+          key: `row-${node.name}-${node.isMain === true ? 'main' : 'dir'}`,
+          type: 'button',
+          className: `dsh-branchman-vrow${selected !== null && selected.name === node.name ? ' is-on' : ''}${node.isMain === true ? ' is-main' : ''}`,
+          onClick: () => setSelected(node),
+        },
+          React.createElement('span', { className: `dsh-branchman-vdot is-${state.kind}` }),
+          React.createElement('span', { className: 'dsh-branchman-vname' },
+            node.isMain === true ? tx('ov.mainRow') : node.name),
+          isCurrent(node)
+            ? React.createElement('span', { className: 'dsh-branchman-heretag' }, tx('ov.here'))
+            : null,
+          React.createElement('span', { className: 'dsh-branchman-vchips' },
+            chips.map((chip, index) => React.createElement('span', {
+              key: `chip-${index}`, className: `dsh-branchman-chip is-${chip.kind}`,
+            }, tx(chip.key, chip.params)))),
+          React.createElement('span', { className: `dsh-branchman-chip is-${state.kind}` }, tx(state.key)))
+      }
+      const listRows = layout === null ? [] : [layout.root.node, ...nodes]
+
       const detail = () => {
         if (selected === null) {
           return React.createElement('div', { className: 'dsh-branchman-detail' }, tx('ov.pickHint'))
@@ -869,93 +1013,133 @@ window.__ModuleLoader__.load({
         const dirty = git !== undefined && git.error === undefined && (git.dirty ?? 0) > 0
         const stale = node.lastActivityAt !== undefined && node.lastActivityAt !== null
           && (Date.now() - new Date(node.lastActivityAt).getTime()) / 86400000 > 3
-        // One labelled fact per chip, and the two long strings (session id, path)
-        // get their own labelled lines: mixed into a single `·`-joined run they
-        // were unreadable, which is what "易读性差" was about.
-        const bits = []
-        if (node.isMain !== true) {
-          if (node.branch !== undefined && node.branch !== null) bits.push(tx('det.branch', { branch: String(node.branch) }))
-          bits.push(tx('det.inherited', { count: node.inheritedEvents ?? 0 }))
-          bits.push(tx('det.messages', { count: node.messageCount ?? 0 }))
-        }
-        if (node.lastActivityAt !== undefined && node.lastActivityAt !== null) {
-          bits.push(tx('det.lastActive', { time: new Date(node.lastActivityAt).toLocaleString() }))
-        }
+        // ── actions ───────────────────────────────────────────────────────
+        // Ordered by what you actually came here to do. Before this, every
+        // operation was visible at once and split across two places, so none of
+        // them read as "the thing to do" — 切到该会话, 取消归档, 同步, 合并,
+        // 拆除 all carried equal weight and equal styling.
         const hasSession = typeof node.sessionId === 'string' && node.sessionId !== ''
-        const opButton = (kind, label, title, danger, blocked) => React.createElement('button', {
-          type: 'button',
-          className: danger === true ? 'dsh-branchman-act is-danger' : 'dsh-branchman-act',
-          disabled: busy !== '' || blocked === true,
-          title,
-          onClick: () => { if (danger === true) { setConfirmDrop(node.name); setNote(null) } else runOp(kind, node) },
-        }, label)
-        // The browser half reloads on a page refresh; the host half only on a
-        // full restart. Offering a control whose route does not exist yet would
-        // turn a page refresh into a row of 404s.
+        const isMain = node.isMain === true
+        const dropped = node.status === 'dropped'
         const opsReady = data?.capabilities?.operations === true
-        const operations = node.isMain === true
+        const broken = node.missingDir === true || node.sessionMissing === true
+        const archived = node.archived === true
+        const canSwitch = hasSession && typeof deps.openSession === 'function'
+        // Merge and sync refuse a dirty worktree on the host, so they are shown
+        // disabled with the reason rather than failing after the click.
+        const act = (kind, label, opts = {}) => React.createElement('button', {
+          type: 'button',
+          className: `dsh-branchman-act${opts.primary === true ? ' is-primary' : ''}${opts.danger === true ? ' is-danger' : ''}`,
+          disabled: busy !== '' || opts.blocked === true,
+          title: opts.title,
+          onClick: () => {
+            if (kind === 'switch') return switchTo(node)
+            if (kind === 'unarchive') return runUnarchive(node)
+            if (opts.danger === true) { setConfirmDrop(node.name); setNote(null); return }
+            runOp(kind, node)
+          },
+        }, label)
+        const archivedIsPrimary = opsReady && hasSession && archived
+        const openIsPrimary = !archivedIsPrimary && canSwitch && dropped !== true && broken !== true
+        const actions = isMain
           ? null
           : opsReady === false
-            ? React.createElement('div', { className: 'dsh-branchman-note' }, tx('det.opsPending'))
-            : node.status === 'dropped'
+            // The browser half reloads on a page refresh, the host half only on a
+            // full restart. Offering a control whose route does not exist yet
+            // turns a refresh into a row of 404s.
+            ? [React.createElement('span', { key: 'pending', className: 'dsh-branchman-note' }, tx('det.opsPending'))]
+            : [
+            archivedIsPrimary
+              ? act('unarchive', tx('det.unarchive'), { primary: true, title: tx('det.unarchive.title') })
+              : openIsPrimary
+                ? act('switch', tx('det.open'), { primary: true, title: tx('det.open.title') })
+                : null,
+            dropped !== true && node.status === 'open'
+              ? act('sync', tx('det.sync'), { blocked: dirty, title: tx('det.sync.title') })
+              : null,
+            dropped !== true && node.status === 'open'
+              ? act('merge', tx('det.merge'), { blocked: dirty, title: tx('det.merge.title') })
+              : null,
+            // Unarchiving is only ever offered once, and never twice: when it is
+            // the primary action above it does not repeat down here.
+            !archivedIsPrimary && opsReady && hasSession && archived
+              ? act('unarchive', tx('det.unarchive'), { title: tx('det.unarchive.title') })
+              : null,
+            dropped === true
               ? null
-              : React.createElement('div', { className: 'dsh-branchman-actions' },
-            React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.actions')),
-            // Merge and sync both refuse a dirty worktree on the host, so the
-            // button is disabled with the reason visible instead of letting the
-            // click fail. Drop stays enabled: it force-removes by design.
-            node.status === 'open' ? opButton('sync', tx('det.sync'), tx('det.sync.title'), false, dirty) : null,
-            node.status === 'open' ? opButton('merge', tx('det.merge'), tx('det.merge.title'), false, dirty) : null,
-            confirmDrop === node.name
-              ? React.createElement(React.Fragment, null,
-                React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.dropConfirm', { name: node.name })),
-                React.createElement('button', {
-                  type: 'button', className: 'dsh-branchman-act is-danger', disabled: busy !== '',
-                  onClick: () => runOp('drop', node),
-                }, tx('det.dropYes')),
-                React.createElement('button', {
-                  type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
-                  onClick: () => setConfirmDrop(''),
-                }, tx('det.cancel')))
-              : opButton('drop', tx('det.drop'), tx('det.drop.title'), true),
-            busy === '' ? null : React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.busy')))
-        return React.createElement('div', { className: 'dsh-branchman-detail' },
-          React.createElement('div', { className: 'dsh-branchman-detname' },
-            node.isMain === true ? tx('ov.mainDetail') : `${node.name} · ${node.status ?? ''}`),
-          React.createElement('div', { className: 'dsh-branchman-detmeta' }, bits.filter(Boolean).join(' · ')),
-          React.createElement('div', { className: 'dsh-branchman-detpath' }, tx('det.path', { path: node.cwd ?? '' })),
+              : confirmDrop === node.name
+                ? React.createElement(React.Fragment, null,
+                  React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.dropConfirm', { name: node.name })),
+                  React.createElement('button', {
+                    type: 'button', className: 'dsh-branchman-act is-danger', disabled: busy !== '',
+                    onClick: () => runOp('drop', node),
+                  }, tx('det.dropYes')),
+                  React.createElement('button', {
+                    type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
+                    onClick: () => setConfirmDrop(''),
+                  }, tx('det.cancel')))
+                : act('drop', tx('det.drop'), { danger: true, title: tx('det.drop.title') }),
+            busy === '' ? null : React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.busy')),
+          ].filter(part => part !== null && part !== undefined && part !== false)
+
+        // Only what is a decision stays on arrival. The directory path and the
+        // 36-character session id are reference material — they used to be the
+        // second and third things on screen.
+        const facts = []
+        if (isMain !== true) {
+          if (Number(node.inheritedEvents ?? 0) > 0) facts.push(tx('det.inherited', { count: node.inheritedEvents }))
+          if (Number(node.messageCount ?? 0) > 0) facts.push(tx('det.messages', { count: node.messageCount }))
+        }
+        if (node.lastActivityAt !== undefined && node.lastActivityAt !== null) {
+          facts.push(tx('det.lastActive', { time: new Date(node.lastActivityAt).toLocaleString() }))
+        }
+        const warnings = []
+        if (node.missingDir === true) warnings.push(tx('det.missingDir'))
+        if (node.sessionMissing === true) warnings.push(tx('det.sessionMissing'))
+        if (archived && hasSession) warnings.push(tx('det.archived'))
+        if (isMain !== true && hasSession !== true) warnings.push(tx('det.missing'))
+        if (stale) warnings.push(tx('det.stale'))
+        if (dirty) warnings.push(tx('det.dirtyBlock'))
+        const more = [
+          React.createElement('div', { className: 'dsh-branchman-detpath', key: 'path' },
+            tx('det.path', { path: node.cwd ?? '' })),
           hasSession
-            ? React.createElement('div', { className: 'dsh-branchman-detpath' }, tx('det.session', { id: node.sessionId }))
+            ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'sid' },
+              tx('det.session', { id: node.sessionId }))
             : null,
-          node.isMain === true ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' },
-            git === undefined
-              ? tx('det.gitLoading')
-              : git.error !== undefined ? tx('det.gitUnknown') : tx('det.git', {
-                ahead: git.ahead, behind: git.behind, dirty: git.dirty,
-              })),
-          stale ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.stale')) : null,
-          node.missingDir === true ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.missingDir')) : null,
-          node.sessionMissing === true ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.sessionMissing')) : null,
-          dirty ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.dirtyBlock')) : null,
-          node.isMain === true || hasSession ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' }, tx('det.missing')),
-          // An archived session is filtered out of every workspace group, so a
-          // direction can be perfectly registered and still not appear in the
-          // sidebar. Say so, and make undoing it one click.
-          node.archived === true && hasSession
-            ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.archived'))
+          node.branch !== undefined && node.branch !== null
+            ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'branch' },
+              tx('det.branch', { branch: String(node.branch) }))
             : null,
-          hasSession && node.archived === true && opsReady
-            ? React.createElement('button', {
-              type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
-              onClick: () => runUnarchive(node),
-            }, tx('det.unarchive'))
-            : null,
-          hasSession && typeof deps.openSession === 'function'
-            ? React.createElement('button', {
-              type: 'button', className: 'dsh-branchman-link', onClick: () => switchTo(node),
-            }, tx('det.switch'))
-            : null,
-          operations,
+        ].filter(Boolean)
+        const state = nodeState(node)
+        return React.createElement('div', { className: 'dsh-branchman-detail' },
+          React.createElement('div', { className: 'dsh-branchman-dethead' },
+            React.createElement('span', { className: 'dsh-branchman-detname' },
+              isMain ? tx('ov.mainDetail') : node.name),
+            React.createElement('span', { className: `dsh-branchman-chip is-${state.kind}` }, tx(state.key))),
+          facts.length === 0
+            ? null
+            : React.createElement('div', { className: 'dsh-branchman-detmeta' }, facts.join(' · ')),
+          isMain
+            ? null
+            : React.createElement('div', { className: 'dsh-branchman-detmeta' },
+              git === undefined
+                ? tx('det.gitLoading')
+                : git.error !== undefined ? tx('det.gitUnknown') : tx('det.git', {
+                  ahead: git.ahead, behind: git.behind, dirty: git.dirty,
+                })),
+          warnings.map((text, index) => React.createElement('div', {
+            className: 'dsh-branchman-stale', key: `w${index}`,
+          }, text)),
+          actions === null || actions.length === 0
+            ? null
+            : React.createElement('div', { className: 'dsh-branchman-actions' }, actions),
+          React.createElement('button', {
+            type: 'button', className: 'dsh-branchman-more',
+            onClick: () => setShowMore(value => !value),
+          }, tx(showMore ? 'det.less' : 'det.more')),
+          showMore ? React.createElement('div', { className: 'dsh-branchman-morebox' }, more) : null,
           note === null ? null : React.createElement('div', {
             className: note.kind === 'ok' ? 'dsh-branchman-note is-ok' : 'dsh-branchman-note is-bad',
           }, note.text))
@@ -965,46 +1149,65 @@ window.__ModuleLoader__.load({
         className: 'dsh-branchman-mask',
         onClick: event => { if (event.target === event.currentTarget) onClose() },
       }, React.createElement('div', { className: 'dsh-branchman-card dsh-branchman-overview', role: 'dialog', 'aria-label': tx('ov.title') },
+        // One header, one primary entry point, one view switch. There used to be
+        // two paragraphs of explanation and a third row of chrome stacked above
+        // the content — reading was the price of admission.
         React.createElement('div', { className: 'dsh-branchman-ovhead' },
           React.createElement('h3', null, tx('ov.title')),
-          React.createElement('span', { className: 'dsh-branchman-ovstats' }, stats)),
-        React.createElement('div', { className: 'dsh-branchman-hint' }, tx('ov.hint')),
-        // The map must not read as "these are the conversations that can
-        // branch". Every conversation can, so the action lives here too.
-        React.createElement('div', { className: 'dsh-branchman-actions dsh-branchman-ovadd' },
-          React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('ov.anyConversation')),
+          React.createElement('span', { className: 'dsh-branchman-ovstats' }, stats),
+          React.createElement('span', { className: 'dsh-branchman-grow' }),
           React.createElement('button', {
-            type: 'button', className: 'dsh-branchman-act', title: tx('ov.branchHere.title'),
+            type: 'button', className: `dsh-branchman-tab${mode === 'list' ? ' is-on' : ''}`,
+            onClick: () => setMode('list'),
+          }, tx('ov.viewList')),
+          React.createElement('button', {
+            type: 'button', className: `dsh-branchman-tab${mode === 'graph' ? ' is-on' : ''}`,
+            onClick: () => setMode('graph'),
+          }, tx('ov.viewGraph')),
+          React.createElement('button', {
+            type: 'button', className: 'dsh-branchman-act is-primary', title: tx('ov.branchHere.title'),
             onClick: () => { onClose(); setView({ kind: 'fork', props: { sessionId: currentId ?? undefined } }) },
           }, tx('ov.branchHere'))),
-        // Why a direction is a workspace of its own and not a child of its repo:
-        // the registry matches on exact cwd, so it cannot be anything else. The
-        // host's own answer is the tree grouping, so point at it here rather
-        // than letting the sidebar look like a flat pile of siblings.
-        React.createElement('div', { className: 'dsh-branchman-hint' },
-          tx(groupingFollowed() ? 'ov.groupingDone' : 'ov.grouping')),
-        React.createElement('div', {
-          className: 'dsh-branchman-canvas',
-          ref: canvasRef,
-          onPointerDown,
-          onPointerMove,
-          onPointerUp,
-          onPointerCancel: onPointerUp,
-        }, nodes.length === 0
-          ? React.createElement('div', { className: 'dsh-branchman-empty' }, tx('ov.empty'))
-          : layout === null ? null : React.createElement('svg', {
-            className: 'dsh-branchman-svg',
-            viewBox: `0 0 ${VIEW_W} ${VIEW_H}`,
-            preserveAspectRatio: 'xMidYMid meet',
-          }, React.createElement('g', {
-            transform: `translate(${Math.round(camera.x)} ${Math.round(camera.y)}) scale(${camera.k.toFixed(3)})`,
-          }, renderNode(layout.root)))),
-        detail(),
+        // Master–detail: the browsable surface on the left, the selected
+        // direction on the right. The graph is now the alternate left pane
+        // rather than the whole dialog.
+        React.createElement('div', { className: 'dsh-branchman-ovbody' },
+          mode === 'graph'
+            ? React.createElement('div', {
+              className: 'dsh-branchman-canvas',
+              ref: canvasRef,
+              onPointerDown,
+              onPointerMove,
+              onPointerUp,
+              onPointerCancel: onPointerUp,
+            }, nodes.length === 0
+              ? React.createElement('div', { className: 'dsh-branchman-empty' }, tx('ov.empty'))
+              : layout === null ? null : React.createElement('svg', {
+                className: 'dsh-branchman-svg',
+                viewBox: `0 0 ${VIEW_W} ${VIEW_H}`,
+                preserveAspectRatio: 'xMidYMid meet',
+              }, React.createElement('g', {
+                transform: `translate(${Math.round(camera.x)} ${Math.round(camera.y)}) scale(${camera.k.toFixed(3)})`,
+              }, renderNode(layout.root))))
+            : React.createElement('div', { className: 'dsh-branchman-vlist' },
+              nodes.length === 0
+                ? React.createElement('div', { className: 'dsh-branchman-empty' }, tx('ov.empty'))
+                : listRows.map(listRow)),
+          detail()),
         React.createElement('div', { className: 'dsh-branchman-ovfoot' },
-          React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: () => zoom(1 / 1.2) }, tx('ov.zoomOut')),
-          React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: () => zoom(1.2) }, tx('ov.zoomIn')),
-          React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: fit }, tx('ov.fit')),
+          // The grouping note is one chip with the full explanation on hover —
+          // it is context, not something to read on arrival.
+          React.createElement('span', {
+            className: 'dsh-branchman-ovnote',
+            title: tx(groupingFollowed() ? 'ov.groupingDone' : 'ov.grouping'),
+          }, tx(groupingFollowed() ? 'ov.groupingShort' : 'ov.groupingShortOff')),
           React.createElement('span', { className: 'dsh-branchman-grow' }),
+          mode === 'graph'
+            ? React.createElement(React.Fragment, null,
+              React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: () => zoom(1 / 1.2) }, tx('ov.zoomOut')),
+              React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: () => zoom(1.2) }, tx('ov.zoomIn')),
+              React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: fit }, tx('ov.fit')))
+            : null,
           React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: load }, tx('ov.refresh')),
           React.createElement('button', { type: 'button', className: 'dsh-branchman-go', onClick: onClose }, tx('ov.close'))),
         React.createElement('div', { className: 'dsh-branchman-err' }, error)))
@@ -1087,7 +1290,7 @@ window.__ModuleLoader__.load({
 
     // Pure helpers for the offline suites (`test/client.mjs`): the layout must be
     // verifiable without a DOM, and the suites deliberately do not emulate React.
-    module.exports.__test = { layoutTree, clip, NODE_W, NODE_H, H_GAP, V_GAP, VIEW_W, VIEW_H, DICT, planGrouping }
+    module.exports.__test = { layoutTree, clip, NODE_W, NODE_H, H_GAP, V_GAP, VIEW_W, VIEW_H, DICT, planGrouping, nodeState, rowChips }
 
     return module.exports
   },
