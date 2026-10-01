@@ -152,8 +152,20 @@ check('总览有同步主线（把主线的提交吸收进走向）', /opButton\
 check('总览有拆除走向', /opButton\('drop', tx\('det\.drop'\)/.test(source))
 check('拆除是两步确认（一键删 worktree 太危险）',
   /setConfirmDrop\(node\.name\)/.test(source) && /confirmDrop === node\.name/.test(source) && /det\.dropYes/.test(source))
-check('操作成功后重取树并把选中项指到新节点（面板不能停在旧状态）',
-  /await callApi\(kind, \{ name: node\.name \}\)[\s\S]{0,240}setData\(refreshed\)[\s\S]{0,240}find\(entry => entry\.name === previous\?\.name\)/.test(source))
+check('操作成功后重取树与 git 状态，并把选中项指到新节点（面板不能停在旧状态）',
+  /await callApi\(kind, \{ name: node\.name \}\)[\s\S]{0,200}const refreshed = await load\(\)[\s\S]{0,600}find\(entry => entry\.name === previous\?\.name\)/.test(source))
+// 盲操作是不合格的"可操作"：merge/sync 在宿主要求走向内干净，所以必须先把
+// git 状态摆出来、并在脏的时候把按钮禁掉，而不是让点击失败。
+check('详情面板显示 git 状态（领先/落后/未提交）',
+  /loadStatus/.test(source) && /'\/branchman\/api\/status'/.test(source) && /tx\('det\.git', \{/.test(source))
+check('有未提交改动时禁用合并/同步并说明原因',
+  /opButton\('sync', tx\('det\.sync'\), tx\('det\.sync\.title'\), false, dirty\)/.test(source)
+  && /opButton\('merge', tx\('det\.merge'\), tx\('det\.merge\.title'\), false, dirty\)/.test(source)
+  && /tx\('det\.dirtyBlock'\)/.test(source))
+check('拆除不受脏工作区限制（设计上就是强删）',
+  /opButton\('drop', tx\('det\.drop'\), tx\('det\.drop\.title'\), true\)/.test(source))
+check('status 读取失败不拖垮树（单独 try/catch）',
+  /const loadStatus = React\.useCallback[\s\S]{0,700}catch \{[\s\S]{0,120}setStatus\(\{\}\)/.test(source))
 check('操作按钮用 act 类且只吃主题令牌', /\.dsh-branchman-act\{/.test(source))
 check('已拆除的走向不给操作按钮', /node\.isMain === true \|\| node\.status === 'dropped'/.test(source))
 check('分支请求带上按钮所属消息的 id（否则只能从最新回合分叉）',
@@ -162,8 +174,9 @@ check('工作区登记失败会如实告知用户', /msg\.wsWarning/.test(source
 // 归档：被归档的会话在任何分组里都被隐藏，所以"挂上工作区"不等于"看得见"。
 check('总览标出已归档的走向', /node\.archived === true && hasSession/.test(source) && /tx\('det\.archived'\)/.test(source))
 check('已归档的走向能一键取消归档', /runUnarchive\(node\)/.test(source) && /tx\('det\.unarchive'\)/.test(source))
-check('取消归档走 uiWorkspace.unarchiveSession（不是 ctx.sessions）',
-  /workspace\.unarchiveSession\(id\)/.test(source) && /deps\.unarchiveSession\(node\.sessionId\)/.test(source))
+// 只取消归档 = 从"到处看不见"变成「未分组」，所以必须由宿主一次做完两件事。
+check('取消归档走宿主路由（补工作区 + 取消归档是原子操作）',
+  /callApi\('unarchive', \{ name: node\.name \}\)/.test(source) && !/uiWorkspace\.unarchiveSession/.test(source))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)

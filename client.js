@@ -90,6 +90,10 @@ window.__ModuleLoader__.load({
         'det.archived': '⚠ 这条走向的会话处于「已归档」——侧栏在所有分组里都会把它藏起来。取消归档后它会回到自己的工作区分组。',
         'det.unarchive': '取消归档',
         'det.done.unarchive': '已取消归档：这条走向的会话现在会出现在自己的工作区分组里。',
+        'det.git': 'git：领先主线 {ahead} · 落后 {behind} · 未提交 {dirty}',
+        'det.gitLoading': 'git：读取中…',
+        'det.gitUnknown': 'git：状态不可读（目录可能已不在）',
+        'det.dirtyBlock': '⚠ 有未提交改动 —— 先在这条走向的目录里提交，才能合并或同步（拆除不受限制）',
         'msg.wsWarning': '走向「{name}」已建立，但工作区登记有问题：{warning}',
       },
       en: {
@@ -150,6 +154,10 @@ window.__ModuleLoader__.load({
         'det.archived': '⚠ This direction’s session is archived — the sidebar hides archived sessions in every grouping. Unarchive it and it returns to its own workspace group.',
         'det.unarchive': 'Unarchive',
         'det.done.unarchive': 'Unarchived: this direction’s session now shows up in its own workspace group.',
+        'det.git': 'git: {ahead} ahead · {behind} behind · {dirty} uncommitted',
+        'det.gitLoading': 'git: reading…',
+        'det.gitUnknown': 'git: state unreadable (the directory may be gone)',
+        'det.dirtyBlock': '⚠ Uncommitted changes — commit inside this direction before merging or syncing (dropping is unrestricted)',
         'msg.wsWarning': 'Direction “{name}” is created, but its workspace registration reported: {warning}',
       },
     }
@@ -309,7 +317,6 @@ window.__ModuleLoader__.load({
     const deps = {
       sessions: null,
       openSession: null,
-      unarchiveSession: null,
       syncCatalog: async () => false,
     }
 
@@ -491,6 +498,8 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState('')
       const [confirmDrop, setConfirmDrop] = React.useState('')
       const [note, setNote] = React.useState(null)
+      // name → {ahead, behind, dirty} | {error}
+      const [status, setStatus] = React.useState({})
 
       const callApi = React.useCallback(async (path, body) => {
         const res = await fetch(`/branchman/api/${path}`, {
@@ -503,15 +512,55 @@ window.__ModuleLoader__.load({
         return payload
       }, [])
 
-      const runOp = React.useCallback(async (kind, node) => {        setBusy(kind)
+      // Per-direction git state, from the same endpoint the agent tool uses.
+      // Without it the operations are blind: merge and sync both refuse a dirty
+      // worktree on the host, so the panel must show WHY before the click, not
+      // as an error after it.
+      const loadStatus = React.useCallback(async () => {
+        try {
+          const res = await fetch('/branchman/api/status')
+          const body = await res.json()
+          if (!res.ok) { setStatus({}); return {} }
+          const map = {}
+          for (const entry of Array.isArray(body?.directions) ? body.directions : []) {
+            if (entry !== null && typeof entry === 'object' && typeof entry.name === 'string') map[entry.name] = entry
+          }
+          setStatus(map)
+          return map
+        } catch {
+          // A status failure must not take the tree down with it.
+          setStatus({})
+          return {}
+        }
+      }, [])
+
+      const load = React.useCallback(async () => {
+        setError('')
+        try {
+          const res = await fetch('/branchman/api/tree')
+          const body = await res.json()
+          if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+          setData(body)
+          await loadStatus()
+          return body
+        } catch (e) {
+          setData(null)
+          setError(String(e.message || e))
+          return undefined
+        }
+      }, [loadStatus])
+
+      const runOp = React.useCallback(async (kind, node) => {
+        setBusy(kind)
         setNote(null)
         try {
           await callApi(kind, { name: node.name })
-          const refreshed = await (await fetch('/branchman/api/tree')).json()
-          setData(refreshed)
+          const refreshed = await load()
           // Selection is held by value, so re-point it at the refreshed node —
           // otherwise the panel keeps showing the status the operation changed.
-          setSelected(previous => refreshed.nodes?.find(entry => entry.name === previous?.name) ?? previous)
+          if (refreshed !== undefined) {
+            setSelected(previous => refreshed.nodes?.find(entry => entry.name === previous?.name) ?? previous)
+          }
           setConfirmDrop('')
           setNote({ kind: 'ok', text: tx(`det.done.${kind}`) })
         } catch (e) {
@@ -519,7 +568,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy('')
         }
-      }, [callApi])
+      }, [callApi, load])
 
       const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes)), [data])
 
@@ -538,30 +587,14 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
-      const load = React.useCallback(async () => {
-        setError('')
-        try {
-          const res = await fetch('/branchman/api/tree')
-          const body = await res.json()
-          if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
-          setData(body)
-          return body
-        } catch (e) {
-          setData(null)
-          setError(String(e.message || e))
-          return undefined
-        }
-      }, [])
-
-      // Unarchiving lives on the CLIENT workspace service, not on the host
-      // registry: the registry owns the archive set, but the sidebar obeys
-      // `uiWorkspace`. Without this the direction would keep its workspace and
-      // stay invisible anyway.
+      // Unarchiving needs BOTH halves — the host route registers the direction's
+      // workspace first and then unarchives, because unarchiving a session that
+      // owns no workspace only moves it from "hidden" to 未分组.
       const runUnarchive = React.useCallback(async node => {
         setBusy('unarchive')
         setNote(null)
         try {
-          await deps.unarchiveSession(node.sessionId)
+          await callApi('unarchive', { name: node.name })
           const refreshed = await load()
           if (refreshed !== undefined) {
             setSelected(previous => refreshed.nodes?.find(entry => entry.name === previous?.name) ?? previous)
@@ -572,7 +605,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy('')
         }
-      }, [load])
+      }, [callApi, load])
 
       React.useEffect(() => { load() }, [load])
       React.useEffect(() => { fit() }, [fit])
@@ -648,6 +681,11 @@ window.__ModuleLoader__.load({
           return React.createElement('div', { className: 'dsh-branchman-detail' }, tx('ov.pickHint'))
         }
         const node = selected
+        // Git state for this direction, if the status endpoint has answered yet.
+        // `dirty` gates merge/sync, because the host refuses both on a dirty
+        // worktree — the panel shows the reason before the click.
+        const git = status[node.name]
+        const dirty = git !== undefined && git.error === undefined && (git.dirty ?? 0) > 0
         const stale = node.lastActivityAt !== undefined && node.lastActivityAt !== null
           && (Date.now() - new Date(node.lastActivityAt).getTime()) / 86400000 > 3
         const bits = []
@@ -659,10 +697,10 @@ window.__ModuleLoader__.load({
         if (node.lastActivityAt !== undefined && node.lastActivityAt !== null) bits.push(new Date(node.lastActivityAt).toLocaleString())
         if (typeof node.sessionId === 'string' && node.sessionId !== '') bits.push(node.sessionId)
         const hasSession = typeof node.sessionId === 'string' && node.sessionId !== ''
-        const opButton = (kind, label, title, danger) => React.createElement('button', {
+        const opButton = (kind, label, title, danger, blocked) => React.createElement('button', {
           type: 'button',
           className: danger === true ? 'dsh-branchman-act is-danger' : 'dsh-branchman-act',
-          disabled: busy !== '',
+          disabled: busy !== '' || blocked === true,
           title,
           onClick: () => { if (danger === true) { setConfirmDrop(node.name); setNote(null) } else runOp(kind, node) },
         }, label)
@@ -670,8 +708,11 @@ window.__ModuleLoader__.load({
           ? null
           : React.createElement('div', { className: 'dsh-branchman-actions' },
             React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.actions')),
-            node.status === 'open' ? opButton('sync', tx('det.sync'), tx('det.sync.title')) : null,
-            node.status === 'open' ? opButton('merge', tx('det.merge'), tx('det.merge.title')) : null,
+            // Merge and sync both refuse a dirty worktree on the host, so the
+            // button is disabled with the reason visible instead of letting the
+            // click fail. Drop stays enabled: it force-removes by design.
+            node.status === 'open' ? opButton('sync', tx('det.sync'), tx('det.sync.title'), false, dirty) : null,
+            node.status === 'open' ? opButton('merge', tx('det.merge'), tx('det.merge.title'), false, dirty) : null,
             confirmDrop === node.name
               ? React.createElement(React.Fragment, null,
                 React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.dropConfirm', { name: node.name })),
@@ -690,7 +731,14 @@ window.__ModuleLoader__.load({
             node.isMain === true ? tx('ov.mainDetail') : `${node.name} · ${node.status ?? ''}`),
           React.createElement('div', { className: 'dsh-branchman-detmeta' }, bits.filter(Boolean).join(' · ')),
           React.createElement('div', { className: 'dsh-branchman-detpath' }, node.cwd ?? ''),
+          node.isMain === true ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' },
+            git === undefined
+              ? tx('det.gitLoading')
+              : git.error !== undefined ? tx('det.gitUnknown') : tx('det.git', {
+                ahead: git.ahead, behind: git.behind, dirty: git.dirty,
+              })),
           stale ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.stale')) : null,
+          dirty ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.dirtyBlock')) : null,
           node.isMain === true || hasSession ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' }, tx('det.missing')),
           // An archived session is filtered out of every workspace group, so a
           // direction can be perfectly registered and still not appear in the
@@ -698,7 +746,7 @@ window.__ModuleLoader__.load({
           node.archived === true && hasSession
             ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.archived'))
             : null,
-          hasSession && node.archived === true && typeof deps.unarchiveSession === 'function'
+          hasSession && node.archived === true
             ? React.createElement('button', {
               type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
               onClick: () => runUnarchive(node),
@@ -789,12 +837,6 @@ window.__ModuleLoader__.load({
           const workspace = child.uiWorkspace
           if (workspace !== undefined && typeof workspace.openSession === 'function') {
             deps.openSession = id => workspace.openSession(id)
-          }
-          // The archive set is the host registry's, but the sidebar obeys this
-          // service — so unarchiving for a direction whose session was archived
-          // has to go through here.
-          if (workspace !== undefined && typeof workspace.unarchiveSession === 'function') {
-            deps.unarchiveSession = id => workspace.unarchiveSession(id)
           }
         })
       }

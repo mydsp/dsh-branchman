@@ -121,6 +121,16 @@ await ws.attachSession(childId)                              // 校验通过后�
 逐个补登记、挂会话、把 `workspaceId` 写回节点（`void store.ready.then(…)`，不阻塞激活；
 目录已删、会话 id 缺失只跳过）。
 
+**已归档的走向要跳过补登记**：归档是注册表全局集合，侧栏的 `sessionVisible` 会把它从
+每一个分组过滤掉 —— 给这样一个会话建工作区，只会让侧栏多出一个**永远空的组**，
+而用户什么也没多看到。所以补登记跳过它，改由总览的「取消归档」在用户点击时
+**一次做完两件事**（先 `create` + `attachSession`，再 `registry.unarchiveSession`）：
+只取消归档的话，会话只是从"到处看不见"变成「未分组」，正是这次要修的毛病。
+
+**总览的操作用 `/branchman/api/status` 兜底**：面板显示每条走向的 ahead/behind/dirty，
+脏的时候「合并」「同步」置灰并写明原因 —— 宿主的 `doMerge`/`doSync` 本来就拒绝脏工作区，
+与其点了报错，不如点之前说明白。status 读取失败单独 try/catch，不拖垮树。
+
 ### 3.3 被动树投影（只存元数据）
 
 ```js
@@ -141,6 +151,7 @@ ctx.on('session/event', …)     // 只更新 messageCount / lastActivityAt / �
 | `POST /branchman/api/merge` | 总览里的「合并到主线」 |
 | `POST /branchman/api/sync` | 总览里的「同步主线」 |
 | `POST /branchman/api/drop` | 总览里的「拆除走向」（客户端两步确认） |
+| `POST /branchman/api/unarchive` | 总览里的「取消归档」：**先补工作区再 unarchive**，一次做两件事 |
 | `GET /branchman/` | 宿主侧 HTML 树页（GUI 内可开；外部浏览器被 renderer 令牌栅栏挡住） |
 
 后三条与三个工具共用同一个 `doMerge` / `doSync` / `doDrop`：总览与 agent 不可能走岔。

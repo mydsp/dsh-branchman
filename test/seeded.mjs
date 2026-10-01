@@ -8,6 +8,7 @@
 // copy is byte-identical to the file under test.
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { Readable } from 'node:stream'
 import { mkdir, writeFile, readFile, rm, copyFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -27,6 +28,33 @@ let fail = 0
 const check = (label, ok, detail = '') => {
   if (ok) { pass += 1; console.log(`  PASS  ${label}`) }
   else { fail += 1; console.log(`  FAIL  ${label}${detail ? ' — ' + detail : ''}`) }
+}
+
+/**
+ * Drive one captured web route with a minimal req/res pair. The routes are the
+ * only part of the host half the tools cannot reach, and "unarchive" is an
+ * atomic two-step there — worth exercising end to end rather than by proxy.
+ */
+const callRoute = async (path, method, body) => {
+  const route = routes.find(entry => entry.path === '/branchman/api')
+  if (route === undefined) throw new Error('api route was never registered')
+  // readBody() does Buffer.concat(chunks), and a real request yields Buffers —
+  // a string chunk would throw ERR_INVALID_ARG_TYPE inside the plugin.
+  const req = Readable.from([Buffer.from(JSON.stringify(body ?? {}), 'utf8')])
+  req.method = method
+  req.url = path
+  // hostOk() only trusts localhost; the real renderer sends this very header.
+  req.headers = { host: '127.0.0.1:43120' }
+  let status = 0
+  let payload = ''
+  await new Promise(resolve => {
+    const res = {
+      writeHead: code => { status = code },
+      end: text => { payload = text; resolve() },
+    }
+    route.handler(req, res)
+  })
+  return { status, body: payload === '' ? {} : JSON.parse(payload) }
 }
 
 // ── throwaway package: real copies + shimmed peers ────────────────────────
@@ -71,6 +99,12 @@ await g(['commit', '-m', 'init'])
 // ── fake host ctx WITH the richer services ────────────────────────────────
 const tools = new Map()
 const calls = []
+// 注册表全局归档集合（getter，可变）：unarchiveSession 会真的把它摘掉，好让
+// "取消归档之后树不再标 archived" 也能验到。
+const archivedIds = ['session-archived']
+// web 路由也被收下来：取消归档是一次"补工作区 + 取消归档"的原子操作，只测
+// doUnarchive 不够，得走一遍真实的 req/res。
+const routes = []
 // 事件序列刻意做成"两个回合"：官方边界算法 = 最后一个 turn/end（seq 3）+ 它
 // 之后同回合的尾部事件（seq 4），遇到新回合（seq 5 turn/start）就停 → 边界 4，
 // 即继承 5 条。若插件误用"最后一个事件"，这里会算出 6/7 条并失败。
@@ -105,7 +139,7 @@ const ctx = {
   tools: { register: def => { tools.set(def.name, def); return () => {} } },
   on: () => () => {},
   effect: fn => { fn(); return () => {} },
-  webServer: { register: () => () => {} },
+  webServer: { register: route => { routes.push(route); return () => {} } },
   logger: { warn: (...a) => console.log('  [warn]', ...a), info: () => {}, error: () => {} },
   sessions: {
     create: (id, options) => { calls.push(['sessions.create', id, options?.meta]); return { id: id ?? 'session-bare-1' } },
@@ -147,10 +181,16 @@ const ctx = {
         },
         resolveByPath: async path => { calls.push(['ws.resolveByPath', path]); return { id: 'ws-1' } },
         delete: async id => { calls.push(['ws.delete', id]); return true },
-        // 归档是注册表全局的集合；被归档的会话在任何分组里都会被隐藏
-        // （sessionVisible 过滤），所以树必须把这个状态报出来 —— 只挂上工作区
-        // 但会话已归档的走向，在侧栏里照样看不见。
-        archivedSessionIds: ['session-legacy'],
+        // 归档是注册表全局的集合（getter，且会变），被归档的会话在任何分组里
+        // 都会被隐藏（sessionVisible 过滤）——所以树必须把这个状态报出来，
+        // 而补登记必须跳过它。
+        get archivedSessionIds() { return archivedIds },
+        unarchiveSession: async id => {
+          calls.push(['ws.unarchive', id])
+          const at = archivedIds.indexOf(id)
+          if (at >= 0) archivedIds.splice(at, 1)
+          return true
+        },
       },
     })
   },
@@ -166,15 +206,27 @@ const ctx = {
 // 0.1.x 时代的走向没有任何工作区登记，而注册表自己的历史对账**只跑一次**
 // （仅在其 domain 未初始化时）——所以插件必须在 activate 时自己补登记，
 // 否则升级后老走向照样落在「未分组」里。
+// 两个节点刻意不同：一个正常、一个的会话在归档集合里。归档会话在任何分组都
+// 被隐藏，所以给它建工作区只会让侧栏多出一个空分组 —— 必须跳过，留给总览的
+// 「取消归档」一次做两件事。
 const LEGACY = '走向-老数据'
+const ARCHIVED = '走向-已归档'
 const legacyCwd = join(SCRATCH, '.branches', LEGACY)
+const archivedCwd = join(SCRATCH, '.branches', ARCHIVED)
 await mkdir(legacyCwd, { recursive: true })
+await mkdir(archivedCwd, { recursive: true })
 await writeFile(TREE, JSON.stringify({
   version: 1,
-  nodes: [{
-    name: LEGACY, cwd: legacyCwd, root: SCRATCH, branch: `branchman/${LEGACY}`,
-    sessionId: 'session-legacy', status: 'open', messageCount: 1,
-  }],
+  nodes: [
+    {
+      name: LEGACY, cwd: legacyCwd, root: SCRATCH, branch: `branchman/${LEGACY}`,
+      sessionId: 'session-legacy', status: 'open', messageCount: 1,
+    },
+    {
+      name: ARCHIVED, cwd: archivedCwd, root: SCRATCH, branch: `branchman/${ARCHIVED}`,
+      sessionId: 'session-archived', status: 'open', messageCount: 1,
+    },
+  ],
 }), 'utf8')
 
 const mod = await import(pathToFileURL(join(PKG, 'index.js')).href)
@@ -187,6 +239,9 @@ check('激活时给老走向补登记工作区（否则升级后仍在「未分�
 check('老走向的会话也挂进该工作区',
   calls.some(c => c[0] === 'ws.attach' && c[1] === 'session-legacy'),
   JSON.stringify(calls.filter(c => c[0] === 'ws.attach')))
+check('已归档的走向不建工作区（否则侧栏多一个永远空的组）',
+  !calls.some(c => c[0] === 'ws.create' && c[1] === archivedCwd),
+  JSON.stringify(calls.filter(c => c[0] === 'ws.create')))
 
 // ── fork with a source conversation ───────────────────────────────────────
 const forked = JSON.parse(await tools.get('branch_fork').execute({
@@ -277,11 +332,35 @@ check('补登记把 workspaceId 写回树节点（drop 时才能注销）',
 // 归档：注册表全局集合，被归档的会话在**所有**分组里都被隐藏 —— 挂上工作区
 // 也救不回来，所以树必须把它报出来，UI 才能给"取消归档"。
 check('树报出已归档的走向（只挂工作区救不了它）',
-  tree.nodes.find(n => n.name === LEGACY)?.archived === true,
+  tree.nodes.find(n => n.name === ARCHIVED)?.archived === true,
   JSON.stringify(tree.nodes.map(n => [n.name, n.archived])))
 check('未归档的走向不会误标 archived',
-  tree.nodes.find(n => n.name === NAME)?.archived === false,
+  tree.nodes.find(n => n.name === LEGACY)?.archived === false,
   JSON.stringify(tree.nodes.map(n => [n.name, n.archived])))
+
+// ── 取消归档：一次请求做两件事 ────────────────────────────────────────────
+// 只取消归档 = 从"到处都看不见"变成「未分组」，所以宿主路由必须先补工作区。
+console.log('\n### 取消归档（补工作区 + 取消归档，走真实 web 路由）')
+calls.length = 0
+const un = await callRoute('/branchman/api/unarchive', 'POST', { name: ARCHIVED })
+check('取消归档路由返回 200', un.status === 200, JSON.stringify(un.body))
+check('先给走向建工作区（否则只会从"藏起来"变成「未分组」）',
+  calls.some(c => c[0] === 'ws.create' && c[1] === archivedCwd),
+  JSON.stringify(calls.filter(c => c[0].startsWith('ws.'))))
+check('工作区建好后挂上会话',
+  calls.some(c => c[0] === 'ws.attach' && c[1] === 'session-archived'),
+  JSON.stringify(calls.filter(c => c[0].startsWith('ws.'))))
+check('调用 registry.unarchiveSession（不是客户端服务）',
+  calls.some(c => c[0] === 'ws.unarchive' && c[1] === 'session-archived'),
+  JSON.stringify(calls.filter(c => c[0].startsWith('ws.'))))
+check('返回体带上 workspaceId', un.body.workspaceId === 'ws-1', JSON.stringify(un.body))
+const treeAfter = JSON.parse(await tools.get('branch_tree').execute({}))
+check('取消归档后树不再标 archived',
+  treeAfter.nodes.find(n => n.name === ARCHIVED)?.archived === false,
+  JSON.stringify(treeAfter.nodes.map(n => [n.name, n.archived])))
+check('取消归档把 workspaceId 写回节点',
+  treeAfter.nodes.find(n => n.name === ARCHIVED)?.workspaceId === 'ws-1',
+  String(treeAfter.nodes.find(n => n.name === ARCHIVED)?.workspaceId))
 
 // ── agent 工具路径：从"调用它的那条对话"分叉 ─────────────────────────────
 // dsh-tools 调 tool.execute(args, exec)，exec.agent 就是调用方（dsh-deja 也

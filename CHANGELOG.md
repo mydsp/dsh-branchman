@@ -46,18 +46,27 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **已归档的走向会被标出来，并可一键取消归档**。归档是注册表全局集合，而侧栏的
   `sessionVisible` 会把归档会话从**每一个**分组里过滤掉 —— 所以"给走向挂了工作区"
   并不等于"它看得见"：一条既挂好工作区、又被归档的走向依然会消失。树的每个节点现在带
-  `archived` 标记（读 `workspaceRegistry.archivedSessionIds`），总览里给出警示和「取消归档」
-  （走客户端 `uiWorkspace.unarchiveSession` —— 归档集合在宿主注册表，但侧栏听这个服务的）。
+  `archived` 标记（读 `workspaceRegistry.archivedSessionIds`），总览里给出警示和「取消归档」。
+  取消归档走新的 `POST /branchman/api/unarchive`，它**一次做两件事**：先给走向建/补工作区，
+  再 `registry.unarchiveSession` —— 只取消归档的话，会话只是从"到处看不见"变成「未分组」，
+  正是这次要修的毛病。同理，激活时的补登记**跳过已归档的走向**：给一个在任何分组里都被
+  隐藏的会话建工作区，只会让侧栏多出一个永远空的组。
+- **总览不是盲操作**：详情面板显示这条走向的 git 状态（领先主线 / 落后 / 未提交），
+  数据取自同一个 `/branchman/api/status`。**有未提交改动时「合并到主线」和「同步主线」
+  直接置灰**并写明原因 —— 宿主的 `doMerge`/`doSync` 本来就拒绝脏工作区，与其点了报错，
+  不如点之前就说明白。「拆除走向」不受此限制（它的设计就是强删）。
 - 树节点新增 `workspaceId` 与 `archived`；`branch_tree` 的 `capabilities` 新增 `workspaceRegistry`。
 
 ### Tests
 
-- `test/seeded.mjs`：工作区记账（create + attach + 树节点记 id + drop 注销 + **激活时给老走向补登记**）、
-  **归档状态上报**、按消息分叉（两个完整回合的源，`messageId` → 4 条 vs 不给 → 9 条 vs 幽灵 id → 9 条）、
-  agent 工具路径（`exec.agent` → 继承 9 条，不读就是 undefined）。
+- `test/seeded.mjs`：工作区记账（create + attach + 树节点记 id + drop 注销 + **激活时给老走向补登记**
+  + **跳过已归档的走向**）、**归档上报**、**走真实 web 路由的「取消归档」**（补工作区 → 挂会话 →
+  `unarchiveSession` → 树不再标 archived）、按消息分叉（两个完整回合的源，`messageId` → 4 条 vs
+  不给 → 9 条 vs 幽灵 id → 9 条）、agent 工具路径（`exec.agent` → 继承 9 条，不读就是 undefined）。
   每条都验过"有牙齿"：临时还原修复后对应用例确实变红。
-- `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`、归档警示与取消归档。
-- 合计 **161 项断言**（tools 31 · seeded 47 · client 58 · manifest 25），四套件全绿。
+- `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`、
+  归档警示与取消归档、**git 状态与脏工作区置灰**。
+- 合计 **173 项断言**（tools 31 · seeded 55 · client 62 · manifest 25），四套件全绿。
 
 ## [0.1.1] — 2026-09-29
 

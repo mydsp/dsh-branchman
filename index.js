@@ -510,12 +510,7 @@ async function doTree(store) {
   // session was archived is invisible in the sidebar no matter which workspace
   // owns it — attaching a workspace alone would leave it just as absent. The
   // tree reports the flag instead of letting the direction look missing.
-  const archived = new Set()
-  {
-    const registry = optional.workspaceRegistry
-    const ids = registry === null || registry === undefined ? undefined : registry.archivedSessionIds
-    if (Array.isArray(ids)) for (const id of ids) archived.add(String(id))
-  }
+  const archived = archivedSessionIds()
   return {
     version: store.state.version,
     // Self-report so a support question is one call away: if defineTool is
@@ -658,6 +653,17 @@ async function doSync(ctx, store, config, args) {
 }
 
 /**
+ * The registry's global archive set, or an empty set when it is unavailable.
+ * An archived session is filtered out of EVERY workspace group, so callers use
+ * this to decide whether a workspace is worth registering at all.
+ */
+function archivedSessionIds() {
+  const registry = optional.workspaceRegistry
+  const ids = registry === null || registry === undefined ? undefined : registry.archivedSessionIds
+  return new Set(Array.isArray(ids) ? ids.map(String) : [])
+}
+
+/**
  * Give the directions that predate workspace accounting a workspace of their
  * own.
  *
@@ -668,19 +674,60 @@ async function doSync(ctx, store, config, args) {
  * the service at activation time would race its own arrival and skip every
  * direction with a "registry unavailable" warning.
  *
+ * An ARCHIVED session is skipped on purpose: it is hidden in every group, so
+ * registering a workspace for it would add an empty group to the sidebar and
+ * change nothing the user can see. The overview's explicit 取消归档 does both
+ * halves in one click instead.
+ *
  * Idempotent and fire-and-forget; a removed directory or a missing session id
  * is skipped, never an error.
  */
 async function backfillDirectionWorkspaces(ctx, store) {
   await store.ready
+  const archived = archivedSessionIds()
   for (const node of store.state.nodes) {
     if (node.status === 'dropped' || typeof node.cwd !== 'string' || !existsSync(node.cwd)) continue
+    if (typeof node.sessionId === 'string' && archived.has(node.sessionId)) {
+      ctx.logger?.warn?.(`branchman: 走向「${node.name}」的会话已归档——跳过工作区登记（在走向总览里点「取消归档」会一并补上）`)
+      continue
+    }
     const result = await attachDirectionWorkspace(ctx, {
       worktree: node.cwd, name: node.name, childSessionId: node.sessionId,
     })
     if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: 走向「${node.name}」${result.warning}`)
     if (result.workspaceId === undefined || node.workspaceId === result.workspaceId) continue
     await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId })).catch(() => {})
+  }
+}
+
+/**
+ * Undo a direction's archival — and register its workspace first.
+ *
+ * Both halves are needed and they must happen together: unarchiving a session
+ * that owns no workspace only moves it from "hidden everywhere" to 未分组,
+ * which is the complaint this whole change exists for. The registry exposes
+ * `unarchiveSession` directly, so the overview's single click can do both
+ * without going through the client workspace service.
+ */
+async function doUnarchive(ctx, store, config, args) {
+  const name = String(args?.name ?? '').trim()
+  const node = store.state.nodes.find(item => item.name === name)
+  if (node === undefined) throw new Error(`没有这条走向「${name}」`)
+  const registry = optional.workspaceRegistry
+  if (registry === null || registry === undefined || typeof registry.unarchiveSession !== 'function') {
+    throw new Error('宿主未提供 workspaceRegistry.unarchiveSession，无法取消归档')
+  }
+  const result = await attachDirectionWorkspace(ctx, { worktree: node.cwd, name: node.name, childSessionId: node.sessionId })
+  if (result.workspaceId !== undefined && node.workspaceId !== result.workspaceId) {
+    await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId }))
+  }
+  if (typeof node.sessionId === 'string' && node.sessionId !== '') {
+    await registry.unarchiveSession(node.sessionId)
+  }
+  return {
+    name: node.name, unarchived: node.sessionId ?? null, workspaceId: result.workspaceId ?? null,
+    ...(result.warning === undefined ? {} : { workspaceWarning: result.warning }),
+    hint: `走向「${name}」的会话已取消归档，并归到自己的工作区分组${result.warning === undefined ? '' : '（但有告警）'}。`,
   }
 }
 
@@ -931,6 +978,16 @@ export async function apply(ctx, config) {
           try {
             const body = JSON.parse(await readBody(req))
             return sendJson(res, 200, await doDrop(ctx, store, cfg, { name: body?.name }))
+          } catch (error) {
+            return sendJson(res, 400, { error: error.message })
+          }
+        }
+        // One click, both halves: registering the workspace AND unarchiving.
+        // Unarchiving alone would only move the session from "hidden" to 未分组.
+        if (path === '/branchman/api/unarchive' && req.method === 'POST') {
+          try {
+            const body = JSON.parse(await readBody(req))
+            return sendJson(res, 200, await doUnarchive(ctx, store, cfg, { name: body?.name }))
           } catch (error) {
             return sendJson(res, 400, { error: error.message })
           }
