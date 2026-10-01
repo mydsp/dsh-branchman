@@ -84,6 +84,7 @@ window.__ModuleLoader__.load({
         'det.lastActive': '最后活动 {time}',
         'det.path': '目录 {path}',
         'det.session': '会话 {id}',
+        'det.sideTitle': '对话侧栏标题：{title}',
         'det.switch': '切到该会话',
         'det.stale': '已 3 天无活动 — 考虑 merge 或 drop',
         'det.missing': '这条走向还没有绑定会话：会话可能在别处被删除，或还没建立。',
@@ -184,6 +185,7 @@ window.__ModuleLoader__.load({
         'det.lastActive': 'last active {time}',
         'det.path': 'dir {path}',
         'det.session': 'session {id}',
+        'det.sideTitle': 'Sidebar title: {title}',
         'det.switch': 'Switch to this session',
         'det.stale': 'No activity for 3 days — consider merge or drop',
         'det.missing': 'This direction has no session bound: it may have been deleted elsewhere, or never created.',
@@ -330,6 +332,10 @@ window.__ModuleLoader__.load({
 .dsh-branchman-vdot.is-warn{background:var(--dsw-alias-state-warn-label)}
 .dsh-branchman-vdot.is-bad{background:var(--dsw-alias-label-error)}
 .dsh-branchman-vname{flex:1 1 auto;min-width:0;font:600 13px Inter,system-ui,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-branchman-vcol{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+.dsh-branchman-vcol .dsh-branchman-vname{flex:0 1 auto}
+.dsh-branchman-vsub{font:400 11px Inter,system-ui,sans-serif;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-branchman-detsub{flex:1 1 auto;min-width:0;font:400 11px Inter,system-ui,sans-serif;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-branchman-vchips{flex:0 0 auto;display:flex;gap:4px;align-items:center}
 .dsh-branchman-heretag{flex:0 0 auto;font:600 10px Inter,system-ui,sans-serif;color:var(--dsw-alias-brand-primary);border:1px solid var(--dsw-alias-brand-primary);border-radius:999px;padding:0 6px}
 .dsh-branchman-chip{font:500 10.5px Inter,system-ui,sans-serif;border-radius:999px;padding:1px 7px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-1)}
@@ -923,6 +929,26 @@ window.__ModuleLoader__.load({
         : node.sessionId === currentId
       const isHere = entry => isCurrent(entry.node)
 
+      // The sidebar shows session TITLES; the tree used to show only branch
+      // NAMES, so matching a direction to its conversation meant guessing from
+      // two different vocabularies. The list snapshot carries each session's
+      // title (the very string the sidebar renders — service.js reads the
+      // 'title' projection into byId), so every label now pairs the two:
+      // title first, branch name second.
+      const titleOf = sessionId => {
+        if (typeof sessionId !== 'string' || sessionId === '') return null
+        const row = deps.sessions?.list?.getSnapshot?.()?.byId?.[sessionId]
+        const title = row?.title
+        return typeof title === 'string' && title !== '' ? title : null
+      }
+      // Cold titles only land in the snapshot once the projections are pulled;
+      // ask once per open (the 4s poll re-renders and picks them up as they
+      // arrive). Best effort — a host without refresh still gets live titles
+      // for every session it already knows.
+      React.useEffect(() => {
+        try { void deps.sessions?.refresh?.() } catch { /* older host */ }
+      }, [])
+
       // The operations live in the detail panel, and the panel used to stay
       // empty until a box was clicked — so opening the overview showed a picture
       // and nothing to do with it, which reads exactly like "no operations".
@@ -945,6 +971,9 @@ window.__ModuleLoader__.load({
           : entry.node.status === 'dropped'
             ? 'dsh-branchman-gnode is-dropped'
             : entry.node.status === 'merged' ? 'dsh-branchman-gnode is-merged' : 'dsh-branchman-gnode'
+        // Same pairing as the list rows: sidebar title on top, branch identity
+        // underneath — the graph is the "tree" the reader maps conversations to.
+        const nodeTitle = entry.main ? null : titleOf(entry.node.sessionId)
         return React.createElement(React.Fragment, { key: `${entry.node.name}-${entry.depth}-${entry.cx}` },
           entry.children.map(child => React.createElement('path', {
             key: `e-${child.node.name}`,
@@ -966,9 +995,11 @@ window.__ModuleLoader__.load({
             : null,
           React.createElement('rect', { className: 'dsh-branchman-box', width: NODE_W, height: NODE_H, rx: 10 }),
           React.createElement('text', { className: 'dsh-branchman-t1', x: 12, y: 24 },
-            entry.main ? tx('ov.main') : clip(entry.node.name, 17)),
+            entry.main ? tx('ov.main') : clip(nodeTitle ?? entry.node.name, 17)),
           React.createElement('text', { className: 'dsh-branchman-t2', x: 12, y: 42 },
-            entry.main ? clip(entry.node.cwd ?? '', 22) : clip(entry.node.branch ?? '', 22))),
+            entry.main
+              ? clip(entry.node.cwd ?? '', 22)
+              : clip(nodeTitle !== null ? entry.node.name : (entry.node.branch ?? ''), 22))),
           entry.children.map(renderNode),
         )
       }
@@ -981,6 +1012,14 @@ window.__ModuleLoader__.load({
       const listRow = node => {
         const state = nodeState(node)
         const chips = rowChips(node, status[node.name])
+        // Title first (what the sidebar shows), branch name second — the pair
+        // is the whole point; when no title is known yet the row degrades to
+        // the branch name alone, exactly like before.
+        const title = titleOf(node.sessionId)
+        const primary = node.isMain === true ? tx('ov.mainRow') : (title ?? node.name)
+        const sub = node.isMain === true
+          ? title
+          : (title !== null && title !== node.name ? node.name : null)
         return React.createElement('button', {
           key: `row-${node.name}-${node.isMain === true ? 'main' : 'dir'}`,
           type: 'button',
@@ -988,8 +1027,9 @@ window.__ModuleLoader__.load({
           onClick: () => setSelected(node),
         },
           React.createElement('span', { className: `dsh-branchman-vdot is-${state.kind}` }),
-          React.createElement('span', { className: 'dsh-branchman-vname' },
-            node.isMain === true ? tx('ov.mainRow') : node.name),
+          React.createElement('span', { className: 'dsh-branchman-vcol' },
+            React.createElement('span', { className: 'dsh-branchman-vname' }, primary),
+            sub !== null ? React.createElement('span', { className: 'dsh-branchman-vsub' }, sub) : null),
           isCurrent(node)
             ? React.createElement('span', { className: 'dsh-branchman-heretag' }, tx('ov.here'))
             : null,
@@ -1103,6 +1143,10 @@ window.__ModuleLoader__.load({
         const more = [
           React.createElement('div', { className: 'dsh-branchman-detpath', key: 'path' },
             tx('det.path', { path: node.cwd ?? '' })),
+          hasSession && titleOf(node.sessionId) !== null
+            ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'title' },
+              tx('det.sideTitle', { title: titleOf(node.sessionId) }))
+            : null,
           hasSession
             ? React.createElement('div', { className: 'dsh-branchman-detpath', key: 'sid' },
               tx('det.session', { id: node.sessionId }))
@@ -1117,6 +1161,14 @@ window.__ModuleLoader__.load({
           React.createElement('div', { className: 'dsh-branchman-dethead' },
             React.createElement('span', { className: 'dsh-branchman-detname' },
               isMain ? tx('ov.mainDetail') : node.name),
+            (() => {
+              // The exact string the sidebar shows for this conversation, right
+              // next to the branch name — the pairing the tree used to omit.
+              const title = titleOf(node.sessionId)
+              return title !== null && title !== node.name
+                ? React.createElement('span', { className: 'dsh-branchman-detsub' }, title)
+                : null
+            })(),
             React.createElement('span', { className: `dsh-branchman-chip is-${state.kind}` }, tx(state.key))),
           facts.length === 0
             ? null

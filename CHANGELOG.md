@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **走向与对话窗口对得上了**。树和总览此前只显示分支名，而侧栏显示的是会话标题，
+  两套名字对不上，找一条走向对应的对话只能靠猜。现在每个标签都成对出现：
+  **侧栏标题为主、分支名为辅**（同一会话的两个名字缺一不可）——
+  列表行是双行（标题在上、分支名在下），图形视图方框第一行换成标题、第二行换成分支名，
+  详情面板标题旁直接并列侧栏标题，「更多信息」里新增「对话侧栏标题」一行。
+  标题取自客户端会话列表快照的 `title` 投影（与侧栏同一数据源，
+  `sessions.list.getSnapshot().byId[id].title`），打开总览时补拉一次
+  `sessions.refresh()` 让冷会话的标题也落进来；标题未知时退回旧行为（只显示分支名）。
+
 ## [0.2.0] — 2026-10-01
 
 三个实机反馈：走向会话落在「未分组」、总览只能看不能动手、分叉点不精确。
