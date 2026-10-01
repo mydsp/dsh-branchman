@@ -57,7 +57,8 @@ window.__ModuleLoader__.load({
         'ov.hint': '一个方框 = 一条走向（git worktree + 会话）。点方框看详情，拖动平移，滚轮缩放。',
         'ov.empty': '还没有走向。点下面的「⎇ 从当前对话开一条走向」开第一条。',
         'ov.anyConversation': '每条对话都能开走向 —— 上面的方框只是已经开过的那些。从你正在看的这条对话开：',
-        'ov.grouping': '侧栏把每条走向平铺成一个工作区、与仓库并列 —— 宿主的 Workspace 按「目录全等」记账，而走向的目录是 worktree，所以它只能自己占一格。想让它嵌在仓库下面：把「工作区」那一行的分组切成「按工作区树」。',
+        'ov.grouping': '侧栏把每条走向平铺成一个工作区、与仓库并列 —— 宿主的 Workspace 按「目录全等」记账，而走向的目录是 worktree，所以它只能自己占一格。想让它跟随父工作区、嵌在仓库下面：把「工作区」那一行的视图选项 → 分组方式，切成「按工作区树」。',
+        'ov.groupingDone': '已把侧栏分组切成「按工作区树」—— 走向会跟随父工作区，嵌在仓库下面（刷新页面后生效）。想改回来：「工作区」那一行的视图选项 → 分组方式 → 按工作区。',
         'ov.branchHere': '⎇ 从当前对话开一条走向',
         'ov.branchHere.title': '从这条对话的最新完成回合分叉。想从某个更早的位置分叉，就用那条消息尾部的分支按钮。',
         'ov.here': '你在这里',
@@ -128,7 +129,8 @@ window.__ModuleLoader__.load({
         'ov.hint': 'One box = one direction (a git worktree + a session). Click a box for details, drag to pan, scroll to zoom.',
         'ov.empty': 'No directions yet. Click “⎇ Branch from this conversation” below to open the first one.',
         'ov.anyConversation': 'Every conversation can branch — the boxes above are only the ones already opened. Branch from the conversation you are reading:',
-        'ov.grouping': 'The sidebar lists every direction as a workspace side by side with its repo — the host accounts Workspaces by exact directory, and a direction’s directory is a worktree, so it has to own one. To nest it under the repo instead, switch the grouping on the “Workspaces” row to “by workspace tree”.',
+        'ov.grouping': 'The sidebar lists every direction as a workspace side by side with its repo — the host accounts Workspaces by exact directory, and a direction’s directory is a worktree, so it has to own one. To make it follow its parent workspace and nest under the repo, switch the grouping on the “Workspaces” row to “by workspace tree”.',
+        'ov.groupingDone': 'The sidebar grouping is now “by workspace tree”, so directions follow their parent workspace and nest under their repo (takes effect after a page reload). To undo it: the “Workspaces” row → view options → grouping → “by workspace”.',
         'ov.branchHere': '⎇ Branch from this conversation',
         'ov.branchHere.title': 'Forks from this conversation’s latest finished turn. To fork from an earlier point, use the branch button under that message.',
         'ov.here': 'you are here',
@@ -339,6 +341,10 @@ window.__ModuleLoader__.load({
       syncCatalog: async () => false,
     }
 
+    // The "directions follow their repo in the sidebar" migration runs at most
+    // once per page load, not once per mounted entry point.
+    let followChecked = false
+
     // ── fork flow ─────────────────────────────────────────────────────────
     // The four steps and their degradation messages are the product of real
     // failures: a host-created session is unknown to the client catalogue until
@@ -430,11 +436,87 @@ window.__ModuleLoader__.load({
       onClick: () => setView({ kind: 'fork', props }),
     })
 
-    const OverviewAction = () => React.createElement(ActionButton, {
-      label: tx('action.overview'),
-      title: tx('action.overview.title'),
-      onClick: () => setView({ kind: 'overview' }),
-    })
+    // ── make a direction follow its parent workspace ──────────────────────
+    // The host registry matches members by EXACT directory —
+    // `sessionPath(id) === record.path`, and `mutate()` re-filters on *every*
+    // write, while `attachSession` throws `its cwd resolves to '<x>'`. So a
+    // direction, whose directory is a worktree, can never sit inside its repo's
+    // workspace record. The only way it "follows" the parent is the sidebar's
+    // own tree grouping, which the host already has: `owningParentFolder()`
+    // nests a workspace under the longest registered ancestor that strictly
+    // contains it, so `E:\repo\.branches\<dir>` lands under `E:\repo`.
+    //
+    // That preference is persisted in the renderer's localStorage
+    // (`attachPersistence(api, name)` → `localStorage.getItem(name)`), and
+    // `createWorkspaceViewStore()` is module-private inside
+    // `dsh-client-ui-workspace.apply()` — there is no client service to call.
+    // Writing the same key is the only handle available. Done ONCE, and only
+    // while the user is still on the default, so a deliberate switch back to
+    // 「按工作区」 is never fought.
+    const VIEW_KEY = 'dsh.workspace.view.v5'
+    const FOLLOW_MARK = 'dsh.branchman.followParent.v1'
+    // Pure decision table, kept apart from the effects so the offline suite can
+    // prove "a deliberate choice is never fought" without a DOM:
+    //   no directions            → null (do nothing at all)
+    //   nothing stored yet       → write the defaults, with tree grouping
+    //   stored, still "workspace"→ write it back with ONLY groupBy changed
+    //   stored, anything else    → record "skipped" and never look again
+    //   stored, unparseable      → same as above: never clobber what we cannot read
+    const planGrouping = (raw, hasDirections) => {
+      if (hasDirections !== true) return null
+      let view = null
+      if (raw !== null) {
+        try { view = JSON.parse(raw) } catch { return { mark: 'skipped', value: null } }
+      }
+      if (view !== null && (typeof view !== 'object' || view.groupBy !== 'workspace')) {
+        return { mark: 'skipped', value: null }
+      }
+      return {
+        mark: 'applied',
+        value: view === null
+          ? { groupBy: 'workspace-tree', orderBy: 'updated', groupExpansion: {}, sessionOrderByAccount: {}, archivedFilter: 'default' }
+          : { ...view, groupBy: 'workspace-tree' },
+      }
+    }
+    const followParentWorkspace = async () => {
+      try {
+        if (typeof localStorage === 'undefined') return
+        if (localStorage.getItem(FOLLOW_MARK) !== null) return
+        const response = await callApi('tree')
+        const nodes = Array.isArray(response?.nodes) ? response.nodes : []
+        const plan = planGrouping(localStorage.getItem(VIEW_KEY), nodes.length > 0)
+        if (plan === null) return
+        if (plan.value !== null) localStorage.setItem(VIEW_KEY, JSON.stringify(plan.value))
+        localStorage.setItem(FOLLOW_MARK, plan.mark)
+        // The workspace store reads localStorage once, at boot, so the new value
+        // only lands on the next load. Do that one reload ourselves — otherwise
+        // "directions follow their repo" needs a refresh the user has no reason
+        // to expect. The marker is already written, so this can never loop.
+        if (plan.mark === 'applied' && typeof location !== 'undefined' && typeof location.reload === 'function') {
+          location.reload()
+        }
+      } catch { /* a sidebar preference is never worth a broken page */ }
+    }
+    const groupingFollowed = () => {
+      try {
+        return typeof localStorage !== 'undefined' && localStorage.getItem(FOLLOW_MARK) === 'applied'
+      } catch { return false }
+    }
+
+    const OverviewAction = () => {
+      // Once per page load, from the always-mounted dock entry — opening the
+      // overview should not be a prerequisite for the sidebar making sense.
+      React.useEffect(() => {
+        if (followChecked) return
+        followChecked = true
+        void followParentWorkspace()
+      }, [])
+      return React.createElement(ActionButton, {
+        label: tx('action.overview'),
+        title: tx('action.overview.title'),
+        onClick: () => setView({ kind: 'overview' }),
+      })
+    }
 
     // ── fork dialog ───────────────────────────────────────────────────────
     const ForkDialog = ({ props, onClose }) => {
@@ -830,7 +912,8 @@ window.__ModuleLoader__.load({
         // the registry matches on exact cwd, so it cannot be anything else. The
         // host's own answer is the tree grouping, so point at it here rather
         // than letting the sidebar look like a flat pile of siblings.
-        React.createElement('div', { className: 'dsh-branchman-hint' }, tx('ov.grouping')),
+        React.createElement('div', { className: 'dsh-branchman-hint' },
+          tx(groupingFollowed() ? 'ov.groupingDone' : 'ov.grouping')),
         React.createElement('div', {
           className: 'dsh-branchman-canvas',
           ref: canvasRef,
@@ -934,7 +1017,7 @@ window.__ModuleLoader__.load({
 
     // Pure helpers for the offline suites (`test/client.mjs`): the layout must be
     // verifiable without a DOM, and the suites deliberately do not emulate React.
-    module.exports.__test = { layoutTree, clip, NODE_W, NODE_H, H_GAP, V_GAP, VIEW_W, VIEW_H, DICT }
+    module.exports.__test = { layoutTree, clip, NODE_W, NODE_H, H_GAP, V_GAP, VIEW_W, VIEW_H, DICT, planGrouping }
 
     return module.exports
   },

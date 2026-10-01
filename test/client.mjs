@@ -92,6 +92,35 @@ check('clip 截断并加省略号', clip('一二三四五六七八九十', 5) ==
 check('clip 短串原样返回', clip('abc', 5) === 'abc')
 check('clip 容忍 null', clip(null, 5) === '')
 
+// ── 跟随父工作区：迁移决策表（真跑纯函数，不是看代码形状） ────────────────
+// 走向的目录是 worktree，注册表按目录全等记账（mutate 每次写入都用
+// sessionPath(id) === record.path 再过滤一遍），所以它永远进不了仓库那条记录 ——
+// 想"跟随父工作区"只能靠宿主的按工作区树分组，而那个偏好在渲染进程的
+// localStorage 里、没有服务可调，只能写同一个 key。既然是写别人的数据，
+// 就必须证明：默认值才动，用户选过的绝不碰。
+const { planGrouping } = mod.__test
+const DEFAULT_VIEW = { groupBy: 'workspace', orderBy: 'updated', groupExpansion: { a: true }, sessionOrderByAccount: { x: ['s1'] }, archivedFilter: 'show' }
+check('没有走向时什么都不做（不动用户的侧栏）',
+  planGrouping(JSON.stringify(DEFAULT_VIEW), false) === null && planGrouping(null, false) === null)
+const fresh = planGrouping(null, true)
+check('首次：补全默认字段并切成按工作区树',
+  fresh?.mark === 'applied' && fresh.value.groupBy === 'workspace-tree'
+  && fresh.value.orderBy === 'updated' && fresh.value.archivedFilter === 'default'
+  && JSON.stringify(fresh.value.groupExpansion) === '{}', JSON.stringify(fresh))
+const patched = planGrouping(JSON.stringify(DEFAULT_VIEW), true)
+check('默认档：只改 groupBy，其余偏好逐字保留',
+  patched?.mark === 'applied' && patched.value.groupBy === 'workspace-tree'
+  && patched.value.orderBy === 'updated' && patched.value.archivedFilter === 'show'
+  && JSON.stringify(patched.value.groupExpansion) === '{"a":true}'
+  && JSON.stringify(patched.value.sessionOrderByAccount) === '{"x":["s1"]}', JSON.stringify(patched))
+check('用户已选平铺 → 记 skipped，一个字节都不写',
+  planGrouping(JSON.stringify({ groupBy: 'flat' }), true)?.value === null)
+check('用户已经在树上 → 同样不写（幂等）',
+  planGrouping(JSON.stringify({ groupBy: 'workspace-tree' }), true)?.value === null)
+check('存的值读不出来 → 宁可不动，也不覆盖',
+  planGrouping('{ not json', true)?.mark === 'skipped'
+  && planGrouping('{ not json', true)?.value === null)
+
 // ── locale dictionary ─────────────────────────────────────────────────────
 const { DICT } = mod.__test
 const zhKeys = Object.keys(DICT.zh).sort()
@@ -191,10 +220,23 @@ check('总览里能直接从当前对话开走向（不是只能看历史）',
   /tx\('ov\.branchHere'\)/.test(source) && /setView\(\{ kind: 'fork', props: \{ sessionId: currentId/.test(source))
 check('写明"每条对话都能开走向"（旧文案只指向消息尾按钮）',
   /tx\('ov\.anyConversation'\)/.test(source) && !/Branch to a new direction” to open the first one/.test(source))
-// 走向必然与仓库并列：注册表按目录全等记账，worktree 只能自己占一格。用户看到
-// 侧栏一列平铺会以为层级坏了 —— 所以把宿主的解法（按工作区树分组）写在地图里。
+// 走向必然与仓库并列：注册表按目录全等记账（mutate 每次写入都按 sessionPath(id)
+// === record.path 再过滤一遍，attachSession 直接抛 cwd resolves to），worktree
+// 所以只能自己占一格。要它"跟随父工作区"就只能靠宿主的按工作区树分组。
 check('解释"走向为什么与仓库并列"，并指向宿主的按工作区树分组',
-  /tx\('ov\.grouping'\)/.test(source) && /按工作区树/.test(source) && /目录全等/.test(source))
+  /'ov\.grouping'/.test(source) && /'ov\.groupingDone'/.test(source)
+  && /按工作区树/.test(source) && /目录全等/.test(source))
+// 迁移本身由上面那张决策表真跑验证；这里只钉住"写的是哪个 key、只做一次"。
+check('写的是宿主自己的视图偏好 key，且每页只尝试一次',
+  /const VIEW_KEY = 'dsh\.workspace\.view\.v5'/.test(source) && /if \(followChecked\) return/.test(source)
+  && /localStorage\.setItem\(VIEW_KEY, JSON\.stringify\(plan\.value\)\)/.test(source))
+// 视图偏好在启动时读一次，所以新值要下一次加载才生效。让用户为此再刷一次
+// （而他没理由知道要刷）就是又一次"功能没落实"—— 所以自己把这唯一一次刷新做掉，
+// 且标记先落盘，绝不可能成环。
+check('自己完成那唯一一次刷新，且标记先写（不可能循环）',
+  /localStorage\.setItem\(FOLLOW_MARK, plan\.mark\)[\s\S]{0,700}plan\.mark === 'applied'[\s\S]{0,140}location\.reload\(\)/.test(source))
+check('已应用/已跳过之后，总览文案自动换成"已切换 + 怎么改回来"',
+  /tx\(groupingFollowed\(\) \? 'ov\.groupingDone' : 'ov\.grouping'\)/.test(source))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)
