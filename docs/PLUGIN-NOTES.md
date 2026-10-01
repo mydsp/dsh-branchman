@@ -2,7 +2,11 @@
 
 这份笔记记录开发 dsh-branchman 过程中**用真实报错换来的**宿主行为约定。
 每条都是：症状（含真实报错原文）→ 原因 → 做法。
-适用版本：DSH Desktop 2.0.14 / Harness 0.1.7-rc.1。
+
+> 版本标记（2026-10-02 经当前安装产物核实）：官方桌面端为
+> `@deepseek-ai/dsh-desktop@0.2.0-rc.2`，Electron 标记见 `version` 文件（44.x，非 Harness 版本）。
+> 旧版 `2.0.14 / Harness 0.1.7-rc.1` 标记已过时，条目中未在本轮重新核实的部分不可整份默认适用于新版。
+> 已核实并固化为代码合同的两条见 §15a/§15b。
 
 目录
 - [一、清单与加载](#一清单与加载)
@@ -143,6 +147,28 @@ sessionQuery.observeSession(id)
 用最后一个事件会继承**半截回合**（`buildForkSeed` 只能用合成的 closer 收尾）。
 源会话没有 `turn/end` 时宿主自己的 fork 直接拒绝；插件选择降级为空子会话并记 warn。
 
+### 16a. `observeSession` 返回**引用计数可弃租约**（已核实，B05 根因）
+
+**症状**：总览每 4 秒轮询一次树，`null` 摘要每轮都重读日志，`sessionQuery` 观察租约只增不减
+（审计隔离复现：2 次树读取 → 2 次 observe、0 次 dispose）。
+
+**原因**：`sessionQuery.observeSession(id)` 返回的对象带 `[Symbol.dispose]`。prepared 观察在
+`retain()` 时 `refs += 1`，只有 `[Symbol.dispose]` 才 `refs -= 1`；不释放会永久 pin 住缓存条目。
+
+**做法**：任何观察必须 `try/finally` 释放，成功、抛错、取消三条路径 dispose 恰好一次。
+插件侧已收敛到 `HostAdapter.withObservation`，测试钉住「prepared/live 各一读、三路径各释放 1 次」。
+
+### 16b. `session/disposed` 是 live 解除的配对通知，不是"磁盘已删除"（已核实，B07 根因）
+
+**症状**：总览把 `session/disposed` 直接持久化成 `sessionMissing`，宣称会话已删除；实际
+只是该会话从 live 集合 detach，日志仍在持久化 corpus 里。
+
+**原因**：`session/disposed` 与 live entry 的 detach 配对；删除会话另有动作。混用会把"下线"
+误报成"已删"，且没核对持久化目录就下结论。
+
+**做法**：presence 分四态判定——live 优先，其次查持久化 corpus（在 → `persisted`，不在 →
+`missing`，corpus 读失败 → `unknown`）。已收敛到 `HostAdapter.sessionPresence`。
+
 ### 17. 客户端建会话后要先同步目录才能打开
 
 **症状**：`sessions.retain: unknown session <id>`。
@@ -232,6 +258,12 @@ GUI 拒外部浏览器、插件改动要重启、错误只出现在宿主日志�
 | `test/seeded.mjs` | 种子继承 / preset 挂载 / boundary 算法（用 node_modules 垫片解析裸导入） |
 | `test/client.mjs` | 模块契约 + **纯布局算法单测** + 可静态化的规范条款（不模拟 React/DOM） |
 | `test/manifest.mjs` | manifest 校验预检 + 导出形式 / `ctx.effect` 清理 / 元数据白名单 |
+| `test/domain/*.test.ts` | 领域层纯函数：Windows 路径边界、图构建、身份模型（`npm run test:domain`） |
+| `test/contract/*.test.ts` | 宿主/ Git 适配器合同：观察租约释放、presence 四态、真实 Git 身份（`npm run test:contract`） |
+
+领域层与合同层是 TypeScript 源码（`src/`），`npm run build` 编译到 `dist/`，
+`npm run typecheck` 全量类型检查。这两个套件**只证明行为合同**，不充当桌面验收
+（见 §28，浏览器 fixture 同样不冒充真实宿主）。
 
 注意 `test/client.mjs` 的形态变过：`0.1.0` 之前它桩了一套 DOM + React hooks 去"真点按钮"，
 但那属于规范明确不建议的做法（见 §28）。现在它只做三件站得住的事：真实加载产物核对模块契约、

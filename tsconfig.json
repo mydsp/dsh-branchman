@@ -8,6 +8,7 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
+    "lib": ["es2023", "esnext.disposable"],
     "noEmit": true,
     "types": ["node"]
   },
