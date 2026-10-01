@@ -645,6 +645,33 @@ async function doSync(ctx, store, config, args) {
   return { synced: name, from, output: output.trim().slice(0, 400) }
 }
 
+/**
+ * Give the directions that predate workspace accounting a workspace of their
+ * own.
+ *
+ * 0.1.x registered none, and the registry's own history reconciliation runs
+ * ONCE (only while its domain is uninitialized) — so without this an
+ * already-existing direction stays under 未分组 even after the upgrade. Called
+ * from the `workspaceRegistry` injection, never from apply directly: sampling
+ * the service at activation time would race its own arrival and skip every
+ * direction with a "registry unavailable" warning.
+ *
+ * Idempotent and fire-and-forget; a removed directory or a missing session id
+ * is skipped, never an error.
+ */
+async function backfillDirectionWorkspaces(ctx, store) {
+  await store.ready
+  for (const node of store.state.nodes) {
+    if (node.status === 'dropped' || typeof node.cwd !== 'string' || !existsSync(node.cwd)) continue
+    const result = await attachDirectionWorkspace(ctx, {
+      worktree: node.cwd, name: node.name, childSessionId: node.sessionId,
+    })
+    if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: 走向「${node.name}」${result.warning}`)
+    if (result.workspaceId === undefined || node.workspaceId === result.workspaceId) continue
+    await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId })).catch(() => {})
+  }
+}
+
 // ─────────────────────────── plugin entry ────────────────────────────
 
 /**
@@ -702,29 +729,17 @@ export async function apply(ctx, config) {
     // Resolved separately: adding a fourth name to the group above would make
     // the whole seeded-fork path hostage to a service that a future host may
     // rename, and the direction still forks without it.
+    let backfilled = false
     ctx.inject(['workspaceRegistry'], (child) => {
       optional.workspaceRegistry = child.workspaceRegistry
       ctx.logger?.info?.('branchman: workspaceRegistry resolved — directions get their own workspace group')
+      // Backfill lives here, not in apply: it must run once the registry really
+      // exists, or every existing direction is skipped with a false warning.
+      if (backfilled) return
+      backfilled = true
+      void backfillDirectionWorkspaces(ctx, store).catch(() => {})
     })
   }
-
-  // ── backfill for directions that predate workspace accounting ──
-  // 0.1.x registered no workspace, and the registry's own history reconciliation
-  // runs ONCE (only while its domain is uninitialized) — so an already-existing
-  // direction would stay under 未分组 even after this upgrade. Attaching them at
-  // activation is idempotent and is the only thing that fixes the directions the
-  // user already has. Fire-and-forget: activation must not wait on the registry.
-  void store.ready.then(async () => {
-    for (const node of store.state.nodes) {
-      if (node.status === 'dropped' || typeof node.cwd !== 'string' || !existsSync(node.cwd)) continue
-      const result = await attachDirectionWorkspace(ctx, {
-        worktree: node.cwd, name: node.name, childSessionId: node.sessionId,
-      })
-      if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: 走向「${node.name}」${result.warning}`)
-      if (result.workspaceId === undefined || node.workspaceId === result.workspaceId) continue
-      await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId })).catch(() => {})
-    }
-  }).catch(() => {})
 
   // ── agent tools ──
   const TOOL_OUTPUT = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
