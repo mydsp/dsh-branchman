@@ -43,16 +43,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   （仅在其 domain 未初始化时），所以升级后老走向照样落在「未分组」。插件现在在 activate 时
   遍历树里未拆除的走向，逐个补登记并挂会话，再把 `workspaceId` 写回节点。
   注册表没起来、目录已被删、会话 id 缺失都只是跳过，不影响激活。
-- 树节点新增 `workspaceId`；`branch_tree` 的 `capabilities` 新增 `workspaceRegistry`。
+- **已归档的走向会被标出来，并可一键取消归档**。归档是注册表全局集合，而侧栏的
+  `sessionVisible` 会把归档会话从**每一个**分组里过滤掉 —— 所以"给走向挂了工作区"
+  并不等于"它看得见"：一条既挂好工作区、又被归档的走向依然会消失。树的每个节点现在带
+  `archived` 标记（读 `workspaceRegistry.archivedSessionIds`），总览里给出警示和「取消归档」
+  （走客户端 `uiWorkspace.unarchiveSession` —— 归档集合在宿主注册表，但侧栏听这个服务的）。
+- 树节点新增 `workspaceId` 与 `archived`；`branch_tree` 的 `capabilities` 新增 `workspaceRegistry`。
 
 ### Tests
 
 - `test/seeded.mjs`：工作区记账（create + attach + 树节点记 id + drop 注销 + **激活时给老走向补登记**）、
-  按消息分叉（两个完整回合的源，`messageId` → 4 条 vs 不给 → 9 条 vs 幽灵 id → 9 条）、
+  **归档状态上报**、按消息分叉（两个完整回合的源，`messageId` → 4 条 vs 不给 → 9 条 vs 幽灵 id → 9 条）、
   agent 工具路径（`exec.agent` → 继承 9 条，不读就是 undefined）。
   每条都验过"有牙齿"：临时还原修复后对应用例确实变红。
-- `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`。
-- 合计 **156 项断言**（tools 31 · seeded 45 · client 55 · manifest 25），四套件全绿。
+- `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`、归档警示与取消归档。
+- 合计 **161 项断言**（tools 31 · seeded 47 · client 58 · manifest 25），四套件全绿。
 
 ## [0.1.1] — 2026-09-29
 

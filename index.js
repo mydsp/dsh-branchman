@@ -505,6 +505,17 @@ async function doFork(ctx, store, config, args) {
 
 async function doTree(store) {
   await store.ready
+  // An archived session is hidden from EVERY grouping surface (`sessionVisible`
+  // filters the archive set out of every workspace group), so a direction whose
+  // session was archived is invisible in the sidebar no matter which workspace
+  // owns it — attaching a workspace alone would leave it just as absent. The
+  // tree reports the flag instead of letting the direction look missing.
+  const archived = new Set()
+  {
+    const registry = optional.workspaceRegistry
+    const ids = registry === null || registry === undefined ? undefined : registry.archivedSessionIds
+    if (Array.isArray(ids)) for (const id of ids) archived.add(String(id))
+  }
   return {
     version: store.state.version,
     // Self-report so a support question is one call away: if defineTool is
@@ -526,6 +537,7 @@ async function doTree(store) {
       messageCount: node.messageCount, lastActivityAt: node.lastActivityAt,
       inheritedEvents: node.inheritedEvents ?? 0,
       workspaceId: node.workspaceId ?? null,
+      archived: typeof node.sessionId === 'string' && archived.has(node.sessionId),
     })),
   }
 }

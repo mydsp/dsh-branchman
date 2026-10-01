@@ -87,6 +87,9 @@ window.__ModuleLoader__.load({
         'det.done.drop': '已拆除：worktree、分支与工作区登记都没了。',
         'det.merged': '已合并',
         'det.dropped': '已拆除',
+        'det.archived': '⚠ 这条走向的会话处于「已归档」——侧栏在所有分组里都会把它藏起来。取消归档后它会回到自己的工作区分组。',
+        'det.unarchive': '取消归档',
+        'det.done.unarchive': '已取消归档：这条走向的会话现在会出现在自己的工作区分组里。',
         'msg.wsWarning': '走向「{name}」已建立，但工作区登记有问题：{warning}',
       },
       en: {
@@ -144,6 +147,9 @@ window.__ModuleLoader__.load({
         'det.done.drop': 'Dropped: worktree, branch and workspace registration are gone.',
         'det.merged': 'merged',
         'det.dropped': 'dropped',
+        'det.archived': '⚠ This direction’s session is archived — the sidebar hides archived sessions in every grouping. Unarchive it and it returns to its own workspace group.',
+        'det.unarchive': 'Unarchive',
+        'det.done.unarchive': 'Unarchived: this direction’s session now shows up in its own workspace group.',
         'msg.wsWarning': 'Direction “{name}” is created, but its workspace registration reported: {warning}',
       },
     }
@@ -303,6 +309,7 @@ window.__ModuleLoader__.load({
     const deps = {
       sessions: null,
       openSession: null,
+      unarchiveSession: null,
       syncCatalog: async () => false,
     }
 
@@ -496,8 +503,7 @@ window.__ModuleLoader__.load({
         return payload
       }, [])
 
-      const runOp = React.useCallback(async (kind, node) => {
-        setBusy(kind)
+      const runOp = React.useCallback(async (kind, node) => {        setBusy(kind)
         setNote(null)
         try {
           await callApi(kind, { name: node.name })
@@ -539,11 +545,34 @@ window.__ModuleLoader__.load({
           const body = await res.json()
           if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
           setData(body)
+          return body
         } catch (e) {
           setData(null)
           setError(String(e.message || e))
+          return undefined
         }
       }, [])
+
+      // Unarchiving lives on the CLIENT workspace service, not on the host
+      // registry: the registry owns the archive set, but the sidebar obeys
+      // `uiWorkspace`. Without this the direction would keep its workspace and
+      // stay invisible anyway.
+      const runUnarchive = React.useCallback(async node => {
+        setBusy('unarchive')
+        setNote(null)
+        try {
+          await deps.unarchiveSession(node.sessionId)
+          const refreshed = await load()
+          if (refreshed !== undefined) {
+            setSelected(previous => refreshed.nodes?.find(entry => entry.name === previous?.name) ?? previous)
+          }
+          setNote({ kind: 'ok', text: tx('det.done.unarchive') })
+        } catch (e) {
+          setNote({ kind: 'bad', text: String(e.message || e) })
+        } finally {
+          setBusy('')
+        }
+      }, [load])
 
       React.useEffect(() => { load() }, [load])
       React.useEffect(() => { fit() }, [fit])
@@ -663,6 +692,18 @@ window.__ModuleLoader__.load({
           React.createElement('div', { className: 'dsh-branchman-detpath' }, node.cwd ?? ''),
           stale ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.stale')) : null,
           node.isMain === true || hasSession ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' }, tx('det.missing')),
+          // An archived session is filtered out of every workspace group, so a
+          // direction can be perfectly registered and still not appear in the
+          // sidebar. Say so, and make undoing it one click.
+          node.archived === true && hasSession
+            ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.archived'))
+            : null,
+          hasSession && node.archived === true && typeof deps.unarchiveSession === 'function'
+            ? React.createElement('button', {
+              type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
+              onClick: () => runUnarchive(node),
+            }, tx('det.unarchive'))
+            : null,
           hasSession && typeof deps.openSession === 'function'
             ? React.createElement('button', {
               type: 'button', className: 'dsh-branchman-link', onClick: () => switchTo(node),
@@ -748,6 +789,12 @@ window.__ModuleLoader__.load({
           const workspace = child.uiWorkspace
           if (workspace !== undefined && typeof workspace.openSession === 'function') {
             deps.openSession = id => workspace.openSession(id)
+          }
+          // The archive set is the host registry's, but the sidebar obeys this
+          // service — so unarchiving for a direction whose session was archived
+          // has to go through here.
+          if (workspace !== undefined && typeof workspace.unarchiveSession === 'function') {
+            deps.unarchiveSession = id => workspace.unarchiveSession(id)
           }
         })
       }

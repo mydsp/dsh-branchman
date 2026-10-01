@@ -159,6 +159,11 @@ check('已拆除的走向不给操作按钮', /node\.isMain === true \|\| node\.
 check('分支请求带上按钮所属消息的 id（否则只能从最新回合分叉）',
   /messageId: typeof props\?\.messageId === 'string' \? props\.messageId : undefined/.test(source))
 check('工作区登记失败会如实告知用户', /msg\.wsWarning/.test(source) && /forked\.workspaceWarning/.test(source))
+// 归档：被归档的会话在任何分组里都被隐藏，所以"挂上工作区"不等于"看得见"。
+check('总览标出已归档的走向', /node\.archived === true && hasSession/.test(source) && /tx\('det\.archived'\)/.test(source))
+check('已归档的走向能一键取消归档', /runUnarchive\(node\)/.test(source) && /tx\('det\.unarchive'\)/.test(source))
+check('取消归档走 uiWorkspace.unarchiveSession（不是 ctx.sessions）',
+  /workspace\.unarchiveSession\(id\)/.test(source) && /deps\.unarchiveSession\(node\.sessionId\)/.test(source))
 
 console.log(`\n================  ${pass} passed, ${fail} failed  ================`)
 if (fail > 0) process.exit(1)

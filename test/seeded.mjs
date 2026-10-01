@@ -147,6 +147,10 @@ const ctx = {
         },
         resolveByPath: async path => { calls.push(['ws.resolveByPath', path]); return { id: 'ws-1' } },
         delete: async id => { calls.push(['ws.delete', id]); return true },
+        // 归档是注册表全局的集合；被归档的会话在任何分组里都会被隐藏
+        // （sessionVisible 过滤），所以树必须把这个状态报出来 —— 只挂上工作区
+        // 但会话已归档的走向，在侧栏里照样看不见。
+        archivedSessionIds: ['session-legacy'],
       },
     })
   },
@@ -270,6 +274,14 @@ check('capabilities 自报 workspaceRegistry 可用', tree.capabilities?.workspa
 check('补登记把 workspaceId 写回树节点（drop 时才能注销）',
   tree.nodes.find(n => n.name === LEGACY)?.workspaceId === 'ws-1',
   String(tree.nodes.find(n => n.name === LEGACY)?.workspaceId))
+// 归档：注册表全局集合，被归档的会话在**所有**分组里都被隐藏 —— 挂上工作区
+// 也救不回来，所以树必须把它报出来，UI 才能给"取消归档"。
+check('树报出已归档的走向（只挂工作区救不了它）',
+  tree.nodes.find(n => n.name === LEGACY)?.archived === true,
+  JSON.stringify(tree.nodes.map(n => [n.name, n.archived])))
+check('未归档的走向不会误标 archived',
+  tree.nodes.find(n => n.name === NAME)?.archived === false,
+  JSON.stringify(tree.nodes.map(n => [n.name, n.archived])))
 
 // ── agent 工具路径：从"调用它的那条对话"分叉 ─────────────────────────────
 // dsh-tools 调 tool.execute(args, exec)，exec.agent 就是调用方（dsh-deja 也
