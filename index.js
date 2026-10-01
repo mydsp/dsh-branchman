@@ -538,6 +538,13 @@ async function doTree(store) {
       inheritedEvents: node.inheritedEvents ?? 0,
       workspaceId: node.workspaceId ?? null,
       archived: typeof node.sessionId === 'string' && archived.has(node.sessionId),
+      // The conversation was deleted from the sidebar; the worktree and branch
+      // are untouched, so the direction is still real.
+      sessionMissing: typeof node.sessionId === 'string' && node.disposedSessionId === node.sessionId,
+      // The directory was removed by hand (`git worktree remove` outside the
+      // plugin, or a plain delete). Everything that needs the worktree fails on
+      // this, so it is reported rather than discovered by a failed click.
+      missingDir: !existsSync(node.cwd),
     })),
   }
 }
@@ -911,6 +918,26 @@ export async function apply(ctx, config) {
     attachDirectionWorkspace(ctx, { worktree: cwd, name, childSessionId: session.id })
       .then(result => { if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: ${result.warning}`) })
       .catch(() => {})
+  })
+
+  // A direction outlives its conversation. Deleting the session from the sidebar
+  // does not delete the worktree, the branch, or the commits in it — so the node
+  // stays, but it must stop claiming a conversation it no longer has, or the
+  // overview keeps offering to open a session that is gone and never says why.
+  //
+  // The flag is stored as the id it refers to (`disposedSessionId`), not as a
+  // boolean: a re-fork sets a new `sessionId`, and the stale flag then simply
+  // stops matching. Nothing has to remember to clear it.
+  ctx.on('session/disposed', session => {
+    const id = typeof session?.id === 'string' ? session.id : null
+    if (id === null) return
+    let hit = false
+    for (const node of store.state.nodes) {
+      if (node.sessionId !== id || node.disposedSessionId === id) continue
+      node.disposedSessionId = id
+      hit = true
+    }
+    if (hit) store.mutate(() => undefined).catch(() => {})
   })
 
   ctx.on('session/event', (session, event) => {

@@ -238,6 +238,27 @@ check('自己完成那唯一一次刷新，且标记先写（不可能循环）'
 check('已应用/已跳过之后，总览文案自动换成"已切换 + 怎么改回来"',
   /tx\(groupingFollowed\(\) \? 'ov\.groupingDone' : 'ov\.grouping'\)/.test(source))
 
+// ── 总览打开就该有东西可操作 ──────────────────────────────────────────────
+// 四个操作全在详情面板里，而面板原本要点了方框才出现 —— 打开总览只看到一张图和
+// "点一个方框查看详情"，读起来就是"操作根本没做"。
+const at = needle => source.indexOf(needle)
+check('打开总览就自动选中一个节点（面板不再是空的）',
+  /setSelected\(nodes\.find\(node => node\.sessionId === currentId\) \?\? newest \?\? layout\.root\.node\)/.test(source))
+// 依赖数组在 render 期求值，所以这个 effect 必须写在 nodes / currentId 之后 ——
+// 早一行就是 TDZ ReferenceError，整块界面白屏。
+check('自动选中声明在 nodes / currentId 之后（依赖数组在 render 期求值）',
+  at('const nodes = Array.isArray(data?.nodes)') < at('if (selected !== null || layout === null) return')
+  && at('const currentId = (() =>') < at('if (selected !== null || layout === null) return'),
+  `${at('const nodes = Array.isArray(data?.nodes)')} / ${at('const currentId = (() =>')} / ${at('if (selected !== null || layout === null) return')}`)
+// 归档**没有事件可听**（asar 里 session/archived、workspace/archived 均 0 匹配，
+// 归档只是 registry 状态经 RPC 落库），所以树只能重读。
+check('总览打开期间定时重读树（归档/删除没有事件可听）',
+  /setInterval\(\(\) => \{ void load\(\) \}, 4000\)/.test(source)
+  && /return \(\) => clearInterval\(timer\)/.test(source))
+check('手动删除对话 / 手动删目录都在面板里说明白',
+  /node\.sessionMissing === true \? React\.createElement[\s\S]{0,120}tx\('det\.sessionMissing'\)/.test(source)
+  && /node\.missingDir === true \? React\.createElement[\s\S]{0,120}tx\('det\.missingDir'\)/.test(source))
+
 // ── 客户端调用的路由必须真的存在，而且方法对得上 ──────────────────────────
 // 这条是血换来的：迁移代码用了 `callApi('tree')`，而 callApi 一律 POST，
 // 宿主的 `/branchman/api/tree` 只接受 `req.method === 'GET'` —— 于是整段迁移

@@ -95,6 +95,8 @@ window.__ModuleLoader__.load({
         'det.merged': '已合并',
         'det.dropped': '已拆除',
         'det.archived': '⚠ 这条走向的会话处于「已归档」——侧栏在所有分组里都会把它藏起来。取消归档后它会回到自己的工作区分组。',
+        'det.sessionMissing': '⚠ 这条走向的对话已被删除（worktree 和分支都还在，提交也没丢）。可以「拆除走向」把它一并清掉，或另开一条走向接上这个目录。',
+        'det.missingDir': '⚠ 这条走向的目录已经不在了——worktree 被插件之外的操作删掉了。合并和同步都会失败，只能「拆除走向」清掉登记。',
         'det.unarchive': '取消归档',
         'det.done.unarchive': '已取消归档：这条走向的会话现在会出现在自己的工作区分组里。',
         'det.git': 'git：领先主线 {ahead} · 落后 {behind} · 未提交 {dirty}',
@@ -167,6 +169,8 @@ window.__ModuleLoader__.load({
         'det.merged': 'merged',
         'det.dropped': 'dropped',
         'det.archived': '⚠ This direction’s session is archived — the sidebar hides archived sessions in every grouping. Unarchive it and it returns to its own workspace group.',
+        'det.sessionMissing': '⚠ This direction’s conversation was deleted (the worktree, the branch and its commits are all still there). Drop the direction to clear it, or open a new direction onto this directory.',
+        'det.missingDir': '⚠ This direction’s directory is gone — the worktree was removed outside the plugin. Merge and sync will fail; dropping is the way to clear the record.',
         'det.unarchive': 'Unarchive',
         'det.done.unarchive': 'Unarchived: this direction’s session now shows up in its own workspace group.',
         'det.git': 'git: {ahead} ahead · {behind} behind · {dirty} uncommitted',
@@ -722,6 +726,16 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { load() }, [load])
       React.useEffect(() => { fit() }, [fit])
 
+      // Everything outside this dialog changes the tree too: archiving a
+      // conversation from the sidebar, deleting one, removing a worktree by hand.
+      // None of those fire anything the plugin can hear, so while the overview is
+      // open it re-reads the (local, metadata-only) tree instead of showing a
+      // snapshot of whenever it happened to be opened.
+      React.useEffect(() => {
+        const timer = setInterval(() => { void load() }, 4000)
+        return () => clearInterval(timer)
+      }, [load])
+
       // Wheel zoom needs a non-passive listener: React attaches wheel handlers
       // passively, so preventDefault inside onWheel is ignored (page scrolls).
       React.useEffect(() => {
@@ -773,6 +787,22 @@ window.__ModuleLoader__.load({
       const isHere = entry => entry.main === true
         ? currentId !== null && !directionIds.has(currentId)
         : entry.node.sessionId === currentId
+
+      // The operations live in the detail panel, and the panel used to stay
+      // empty until a box was clicked — so opening the overview showed a picture
+      // and nothing to do with it, which reads exactly like "no operations".
+      // Pick something on open: your own conversation if it is a direction, else
+      // the most recently active live one, else the main line. Declared here, not
+      // with the other effects, because the dependency array is evaluated during
+      // render and `nodes` / `currentId` are not initialized yet up there.
+      React.useEffect(() => {
+        if (selected !== null || layout === null) return
+        const newest = nodes
+          .filter(node => node.status !== 'dropped')
+          .slice()
+          .sort((a, b) => String(b.lastActivityAt ?? '').localeCompare(String(a.lastActivityAt ?? '')))[0]
+        setSelected(nodes.find(node => node.sessionId === currentId) ?? newest ?? layout.root.node)
+      }, [layout, selected, nodes, currentId])
 
       const renderNode = entry => {
         const cls = entry.main
@@ -878,6 +908,8 @@ window.__ModuleLoader__.load({
                 ahead: git.ahead, behind: git.behind, dirty: git.dirty,
               })),
           stale ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.stale')) : null,
+          node.missingDir === true ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.missingDir')) : null,
+          node.sessionMissing === true ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.sessionMissing')) : null,
           dirty ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.dirtyBlock')) : null,
           node.isMain === true || hasSession ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' }, tx('det.missing')),
           // An archived session is filtered out of every workspace group, so a

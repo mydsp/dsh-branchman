@@ -105,6 +105,9 @@ const archivedIds = ['session-archived']
 // web 路由也被收下来：取消归档是一次"补工作区 + 取消归档"的原子操作，只测
 // doUnarchive 不够，得走一遍真实的 req/res。
 const routes = []
+// ctx.on 注册的处理器收下来，好让被动投影能被**真的触发一次** —— 用户手动删除
+// 对话后"树不更新"这类 bug，只有真跑一遍 dispose 才测得出来。
+const handlers = []
 // 事件序列刻意做成"两个回合"：官方边界算法 = 最后一个 turn/end（seq 3）+ 它
 // 之后同回合的尾部事件（seq 4），遇到新回合（seq 5 turn/start）就停 → 边界 4，
 // 即继承 5 条。若插件误用"最后一个事件"，这里会算出 6/7 条并失败。
@@ -137,7 +140,7 @@ let disposed = false
 
 const ctx = {
   tools: { register: def => { tools.set(def.name, def); return () => {} } },
-  on: () => () => {},
+  on: (name, handler) => { handlers.push([name, handler]); return () => {} },
   effect: fn => { fn(); return () => {} },
   webServer: { register: route => { routes.push(route); return () => {} } },
   logger: { warn: (...a) => console.log('  [warn]', ...a), info: () => {}, error: () => {} },
@@ -397,6 +400,48 @@ check('仍把走向建好（不因无回合挡路）', /^session-/.test(String(f
 check('明确标注未继承历史', forked2.seeded === false && forked2.inheritedEvents === 0,
   JSON.stringify({ seeded: forked2.seeded, inherited: forked2.inheritedEvents }))
 check('退回裸会话创建', calls.some(c => c[0] === 'sessions.create'))
+
+// ── 用户在侧栏手动删掉对话：树必须跟着变 ─────────────────────────────────
+// 删除对话**不会**删掉 worktree、分支和里面的提交，所以节点不能消失 —— 但也
+// 不能再声称自己有一条对话（否则总览会一直让人去点一个已经不存在的东西）。
+// 宿主事件名是 session/disposed（`ctx.on('session/created')` 的对手）。
+console.log('\n### 手动删除对话 / 手动删目录')
+const disposeHandler = handlers.find(([name]) => name === 'session/disposed')?.[1]
+check('注册了 session/disposed（删除对话时更新树）', typeof disposeHandler === 'function',
+  handlers.map(([name]) => name).join(','))
+
+const beforeDispose = JSON.parse(await tools.get('branch_tree').execute({}))
+const victim = beforeDispose.nodes.find(node => node.name === NAME)
+check('删除前：不标 sessionMissing', victim?.sessionMissing === false, JSON.stringify(victim?.sessionMissing))
+
+await disposeHandler({ id: victim.sessionId })
+const afterDispose = JSON.parse(await tools.get('branch_tree').execute({}))
+check('删除后：该走向标出 sessionMissing',
+  afterDispose.nodes.find(node => node.name === NAME)?.sessionMissing === true,
+  JSON.stringify(afterDispose.nodes.map(node => [node.name, node.sessionMissing])))
+check('删除后节点仍在（worktree 与分支没被删）',
+  afterDispose.nodes.some(node => node.name === NAME))
+check('不误伤别的走向',
+  afterDispose.nodes.filter(node => node.sessionMissing === true).length === 1,
+  JSON.stringify(afterDispose.nodes.map(node => [node.name, node.sessionMissing])))
+// 处理器是同步的（store.mutate 异步、不 await），所以只测"不抛、不改错东西"。
+const settle = fn => { try { fn(); return null } catch (error) { return error } }
+check('没有 id 的 dispose 静默返回（不崩、不误匹配）', settle(() => disposeHandler({})) === null)
+check('重复 dispose 幂等（再触发一次仍只有那一个节点被标）',
+  settle(() => disposeHandler({ id: victim.sessionId })) === null
+  && JSON.parse(await tools.get('branch_tree').execute({}))
+    .nodes.filter(node => node.sessionMissing === true).length === 1)
+
+// 目录被插件之外的操作删掉（`git worktree remove`、直接删文件夹）——合并与同步
+// 都会失败，所以要在点之前就说明白，而不是让点击去发现。
+await rm(legacyCwd, { recursive: true, force: true })
+const afterRm = JSON.parse(await tools.get('branch_tree').execute({}))
+check('目录不见了 → 标 missingDir',
+  afterRm.nodes.find(node => node.name === LEGACY)?.missingDir === true,
+  JSON.stringify(afterRm.nodes.map(node => [node.name, node.missingDir])))
+check('目录还在的走向不误标 missingDir',
+  afterRm.nodes.find(node => node.name === NAME)?.missingDir === false,
+  JSON.stringify(afterRm.nodes.map(node => [node.name, node.missingDir])))
 
 // ── 拆除：工作区登记不能比走向活得久 ─────────────────────────────────────
 console.log('\n### 拆除走向时注销工作区')
