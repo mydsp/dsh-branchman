@@ -167,7 +167,12 @@ check('拆除不受脏工作区限制（设计上就是强删）',
 check('status 读取失败不拖垮树（单独 try/catch）',
   /const loadStatus = React\.useCallback[\s\S]{0,700}catch \{[\s\S]{0,120}setStatus\(\{\}\)/.test(source))
 check('操作按钮用 act 类且只吃主题令牌', /\.dsh-branchman-act\{/.test(source))
-check('已拆除的走向不给操作按钮', /node\.isMain === true \|\| node\.status === 'dropped'/.test(source))
+check('已拆除的走向不给操作按钮', /node\.status === 'dropped'/.test(source) && /opsReady === false/.test(source))
+// 客户端刷新页面就更新、宿主半边只能重启才更新 —— 两个半边可能差一个版本，
+// 所以界面不能在路由还不存在时就把按钮摆出来（点了就是 404）。
+check('宿主还没加载新版本时不摆操作按钮，而是说明原因',
+  /const opsReady = data\?\.capabilities\?\.operations === true/.test(source) && /tx\('det\.opsPending'\)/.test(source))
+check('取消归档同样受 opsReady 门控', /node\.archived === true && opsReady/.test(source))
 check('分支请求带上按钮所属消息的 id（否则只能从最新回合分叉）',
   /messageId: typeof props\?\.messageId === 'string' \? props\.messageId : undefined/.test(source))
 check('工作区登记失败会如实告知用户', /msg\.wsWarning/.test(source) && /forked\.workspaceWarning/.test(source))

@@ -55,6 +55,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   数据取自同一个 `/branchman/api/status`。**有未提交改动时「合并到主线」和「同步主线」
   直接置灰**并写明原因 —— 宿主的 `doMerge`/`doSync` 本来就拒绝脏工作区，与其点了报错，
   不如点之前就说明白。「拆除走向」不受此限制（它的设计就是强删）。
+- **客户端与宿主版本错位时不给假按钮**：浏览器半边刷新页面就更新，宿主半边只能完全重启才
+  更新，所以两者可能差一个版本。`/branchman/api/tree` 的 `capabilities` 新增 `operations`，
+  界面只在它为 true 时摆出四个操作；否则显示一句"宿主侧还没加载新版本，完全退出 DSH 再启动"。
+  没有这道门，重启前刷新一次页面就会看到一排点了 404 的按钮。
 - 树节点新增 `workspaceId` 与 `archived`；`branch_tree` 的 `capabilities` 新增 `workspaceRegistry`。
 
 ### Tests
@@ -66,7 +70,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   每条都验过"有牙齿"：临时还原修复后对应用例确实变红。
 - `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`、
   归档警示与取消归档、**git 状态与脏工作区置灰**。
-- 合计 **173 项断言**（tools 31 · seeded 55 · client 62 · manifest 25），四套件全绿。
+- 合计 **176 项断言**（tools 31 · seeded 56 · client 64 · manifest 25），四套件全绿。
 
 ## [0.1.1] — 2026-09-29
 

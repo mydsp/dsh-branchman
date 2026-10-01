@@ -326,6 +326,10 @@ const node = tree.nodes.find(n => n.name === NAME)
 check('树节点记录继承事件数', node?.inheritedEvents === EXPECTED_INHERITED, JSON.stringify(node))
 check('树节点记住 workspaceId（drop 时才能注销）', node?.workspaceId === 'ws-1', String(node?.workspaceId))
 check('capabilities 自报 workspaceRegistry 可用', tree.capabilities?.workspaceRegistry === true, JSON.stringify(tree.capabilities))
+// 客户端刷新页面即可更新、宿主只能重启才更新，所以浏览器半边靠这个标记判断
+// 操作路由到底存不存在。
+check('capabilities 自报操作路由可用（客户端据此决定摆不摆按钮）',
+  tree.capabilities?.operations === true, JSON.stringify(tree.capabilities))
 check('补登记把 workspaceId 写回树节点（drop 时才能注销）',
   tree.nodes.find(n => n.name === LEGACY)?.workspaceId === 'ws-1',
   String(tree.nodes.find(n => n.name === LEGACY)?.workspaceId))

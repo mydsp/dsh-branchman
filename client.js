@@ -94,6 +94,7 @@ window.__ModuleLoader__.load({
         'det.gitLoading': 'git：读取中…',
         'det.gitUnknown': 'git：状态不可读（目录可能已不在）',
         'det.dirtyBlock': '⚠ 有未提交改动 —— 先在这条走向的目录里提交，才能合并或同步（拆除不受限制）',
+        'det.opsPending': '合并 / 同步 / 拆除 / 取消归档 需要宿主侧加载新版本后才会出现 —— 完全退出 DSH（含托盘）再启动即可，界面本身刷新页面就够。',
         'msg.wsWarning': '走向「{name}」已建立，但工作区登记有问题：{warning}',
       },
       en: {
@@ -158,6 +159,7 @@ window.__ModuleLoader__.load({
         'det.gitLoading': 'git: reading…',
         'det.gitUnknown': 'git: state unreadable (the directory may be gone)',
         'det.dirtyBlock': '⚠ Uncommitted changes — commit inside this direction before merging or syncing (dropping is unrestricted)',
+        'det.opsPending': 'Merge / sync / drop / unarchive appear once the host half carries the new version — quit DSH completely (tray included) and start it again; the page itself only needs a refresh.',
         'msg.wsWarning': 'Direction “{name}” is created, but its workspace registration reported: {warning}',
       },
     }
@@ -704,9 +706,17 @@ window.__ModuleLoader__.load({
           title,
           onClick: () => { if (danger === true) { setConfirmDrop(node.name); setNote(null) } else runOp(kind, node) },
         }, label)
-        const operations = node.isMain === true || node.status === 'dropped'
+        // The browser half reloads on a page refresh; the host half only on a
+        // full restart. Offering a control whose route does not exist yet would
+        // turn a page refresh into a row of 404s.
+        const opsReady = data?.capabilities?.operations === true
+        const operations = node.isMain === true
           ? null
-          : React.createElement('div', { className: 'dsh-branchman-actions' },
+          : opsReady === false
+            ? React.createElement('div', { className: 'dsh-branchman-note' }, tx('det.opsPending'))
+            : node.status === 'dropped'
+              ? null
+              : React.createElement('div', { className: 'dsh-branchman-actions' },
             React.createElement('span', { className: 'dsh-branchman-detmeta' }, tx('det.actions')),
             // Merge and sync both refuse a dirty worktree on the host, so the
             // button is disabled with the reason visible instead of letting the
@@ -746,7 +756,7 @@ window.__ModuleLoader__.load({
           node.archived === true && hasSession
             ? React.createElement('div', { className: 'dsh-branchman-stale' }, tx('det.archived'))
             : null,
-          hasSession && node.archived === true
+          hasSession && node.archived === true && opsReady
             ? React.createElement('button', {
               type: 'button', className: 'dsh-branchman-act', disabled: busy !== '',
               onClick: () => runUnarchive(node),

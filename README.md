@@ -117,12 +117,12 @@ cordis 服务 Proxy 的抛错语义、`defineTool` 的必要性、`exports["./cl
 npm test
 ```
 
-**173 项断言 / 四个套件 / 不需要重启宿主 / 不碰你自己的仓库**：
+**176 项断言 / 四个套件 / 不需要重启宿主 / 不碰你自己的仓库**：
 
 | 套件 | 覆盖 |
 |---|---|
 | `test/tools.mjs` | 六个工具全链路、脏线守卫、24 次并发写不变量 |
-| `test/seeded.mjs` | 子会话继承历史、分叉点换算（按消息 / 最新回合 / 幽灵 id）、工作区记账（含老走向补登记、跳过已归档、走真实 web 路由的取消归档）、agent preset 挂载 |
+| `test/seeded.mjs` | 子会话继承历史、分叉点换算（按消息 / 最新回合 / 幽灵 id）、工作区记账（含老走向补登记、跳过已归档、走真实 web 路由的取消归档）、版本错位门控、agent preset 挂载 |
 | `test/client.mjs` | 模块契约 + 纯布局算法单测 + 可静态化的规范条款（**不模拟 React/DOM**，见下） |
 | `test/manifest.mjs` | manifest 校验预检 + 导出形式 / `ctx.effect` 清理 / 元数据白名单 |
 

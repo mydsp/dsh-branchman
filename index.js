@@ -525,6 +525,11 @@ async function doTree(store) {
       // Without this a direction cannot own a Workspace, and its session shows
       // up under 未分组 instead of the tree.
       workspaceRegistry: optional.workspaceRegistry !== null,
+      // The client half reloads on a page refresh while the host half only
+      // reloads on a full restart, so the two can be a version apart. This flag
+      // is how the browser knows whether the operation routes behind its
+      // buttons actually exist yet.
+      operations: true,
     },
     nodes: store.state.nodes.map(node => ({
       name: node.name, parentName: node.parentName, root: node.root, cwd: node.cwd, branch: node.branch,
