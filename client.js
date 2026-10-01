@@ -71,9 +71,11 @@ window.__ModuleLoader__.load({
         'ov.fit': '适应窗口',
         'ov.refresh': '刷新',
         'ov.pickHint': '点一个方框查看详情',
-        'ov.main': '◆ 主线',
+        'ov.main': '◆ 主线·主目录',
         'ov.mainDetail': '主线（工作区主目录）',
-        'ov.mainRow': '主线',
+        'ov.mainRow': '主线 · 仓库主目录',
+        'ov.mainHint': '主线 = 仓库主目录这条结构线，不是某一条对话；● 标记你当前所在的位置。归档的走向会话不在侧栏里，只有这里能找到它们。',
+        'ov.onMain': '当前对话：{title}',
         'ov.viewList': '列表',
         'ov.viewGraph': '图形',
         'ov.groupingShort': '侧栏：按工作区树',
@@ -173,9 +175,11 @@ window.__ModuleLoader__.load({
         'ov.fit': 'Fit',
         'ov.refresh': 'Refresh',
         'ov.pickHint': 'Click a box to see its details',
-        'ov.main': '◆ main',
+        'ov.main': '◆ main (repo root)',
         'ov.mainDetail': 'Main line (the workspace’s main directory)',
-        'ov.mainRow': 'Main line',
+        'ov.mainRow': 'Main line · repo root',
+        'ov.mainHint': 'The main line is the repo-root structural node, not a conversation; ● marks where you are. Archived direction sessions are not in the sidebar — only here.',
+        'ov.onMain': 'Current conversation: {title}',
         'ov.viewList': 'List',
         'ov.viewGraph': 'Graph',
         'ov.groupingShort': 'Sidebar: by workspace tree',
@@ -1061,17 +1065,26 @@ window.__ModuleLoader__.load({
         // content preview); the second line is the other half of the pair, or
         // the branch name when there is nothing else. No title/preview at all
         // degrades to the old single-name row.
+        //
+        // 主线不是一条对话——它是客户端合成的结构节点（仓库主目录，无
+        // sessionId），切到哪条对话它都在。所以：标签写明"仓库主目录"；
+        // 副行只在"你当前就在主线上"时显示当前对话标题（此刻它才是真信息），
+        // 其余时候留空，绝不挂一条可能已过时的对话标题误导人。
         const title = usableTitleOf(node)
         const preview = previewOf(node)
         const primary = node.isMain === true ? tx('ov.mainRow') : (title ?? preview ?? node.name)
         const sub = node.isMain === true
-          ? titleOf(node.sessionId)
+          ? (isCurrent(node) && currentId !== null && titleOf(currentId) !== null
+            ? tx('ov.onMain', { title: titleOf(currentId) })
+            : null)
           : primary === title
             ? (preview ?? (title !== node.name ? node.name : null))
             : node.name
+        const rowHint = node.isMain === true ? tx('ov.mainHint') : undefined
         return React.createElement('button', {
           key: `row-${node.name}-${node.isMain === true ? 'main' : 'dir'}`,
           type: 'button',
+          title: rowHint,
           className: `dsh-branchman-vrow${selected !== null && selected.name === node.name ? ' is-on' : ''}${node.isMain === true ? ' is-main' : ''}`,
           onClick: () => setSelected(node),
         },
