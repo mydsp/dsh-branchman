@@ -974,26 +974,6 @@ window.__ModuleLoader__.load({
         }
       }, [callApi, load])
 
-      const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes, data.mainline, currentId)), [data, currentId])
-
-      const fit = React.useCallback(() => {
-        if (layout === null) return
-        const k = Math.min(1.15, Math.min((canvasSize.w - 24) / Math.max(1, layout.width), (canvasSize.h - 24) / Math.max(1, layout.height)))
-        setCamera({ k, x: (canvasSize.w - layout.width * k) / 2, y: (canvasSize.h - layout.height * k) / 2 })
-      }, [layout])
-
-      // 缩放围绕一个锚点（滚轮=光标，按钮=画布中心）：图形在光标下不漂移。
-      const zoomAt = React.useCallback((factor, px, py) => {
-        setCamera(previous => {
-          const k = Math.max(0.2, Math.min(2.5, previous.k * factor))
-          const scale = k / previous.k
-          return { k, x: px - (px - previous.x) * scale, y: py - (py - previous.y) * scale }
-        })
-      }, [])
-      const zoom = React.useCallback(factor => {
-        zoomAt(factor, canvasSize.w / 2, canvasSize.h / 2)
-      }, [zoomAt, canvasSize.w, canvasSize.h])
-
       // Unarchiving needs BOTH halves — the host route registers the direction's
       // workspace first and then unarchives, because unarchiving a session that
       // owns no workspace only moves it from "hidden" to 未分组.
@@ -1015,7 +995,6 @@ window.__ModuleLoader__.load({
       }, [callApi, load])
 
       React.useEffect(() => { load() }, [load])
-      React.useEffect(() => { fit() }, [fit])
 
       // Everything outside this dialog changes the tree too: archiving a
       // conversation from the sidebar, deleting one, removing a worktree by hand.
@@ -1026,21 +1005,6 @@ window.__ModuleLoader__.load({
         const timer = setInterval(() => { void load() }, 4000)
         return () => clearInterval(timer)
       }, [load])
-
-      // Wheel zoom needs a non-passive listener: React attaches wheel handlers
-      // passively, so preventDefault inside onWheel is ignored (page scrolls).
-      React.useEffect(() => {
-        const node = canvasRef.current
-        if (node === null) return undefined
-        const onWheel = event => {
-          event.preventDefault()
-          // 以光标为锚点缩放：指哪放大哪，图形不会朝屏幕中心漂。
-          const rect = node.getBoundingClientRect()
-          zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX - rect.left, event.clientY - rect.top)
-        }
-        node.addEventListener('wheel', onWheel, { passive: false })
-        return () => node.removeEventListener('wheel', onWheel)
-      }, [zoomAt])
 
       const onPointerDown = event => {
         dragRef.current = { x: event.clientX, y: event.clientY, ...cameraRef.current }
@@ -1067,6 +1031,7 @@ window.__ModuleLoader__.load({
       const live = nodes.filter(node => node.status !== 'dropped').length
       const stats = nodes.length === 0 ? tx('ov.none') : tx('ov.stats', { total: nodes.length, live })
 
+      // ── 当前对话的定位：必须先于 layout（TDZ 实锤，见下） ────────────────
       // The tree is GLOBAL — one file for every conversation — so without this
       // the overview reads as "branching belongs to the conversations already
       // in it", which is exactly backwards. Mark where the reader is, and offer
@@ -1092,6 +1057,47 @@ window.__ModuleLoader__.load({
           && !directionIds.has(currentId))
         : node.sessionId === currentId
       const isHere = entry => isCurrent(entry.node)
+
+      // ── 图形相机：必须在 currentId/directionIds 之后声明 ────────────────
+      // layout 的树干可见性依赖 currentId；fit/zoom 依赖 layout。声明顺序错
+      // 一行就是 TDZ（'Cannot access currentId before initialization'，2026-10-01
+      // 实锤踩过：总览整个打不开）。
+      const layout = React.useMemo(() => (data === null ? null : layoutTree(data.nodes, data.mainline, currentId)), [data, currentId])
+
+      const fit = React.useCallback(() => {
+        if (layout === null) return
+        const k = Math.min(1.15, Math.min((canvasSize.w - 24) / Math.max(1, layout.width), (canvasSize.h - 24) / Math.max(1, layout.height)))
+        setCamera({ k, x: (canvasSize.w - layout.width * k) / 2, y: (canvasSize.h - layout.height * k) / 2 })
+      }, [layout, canvasSize.w, canvasSize.h])
+
+      // 缩放围绕一个锚点（滚轮=光标，按钮=画布中心）：图形在光标下不漂移。
+      const zoomAt = React.useCallback((factor, px, py) => {
+        setCamera(previous => {
+          const k = Math.max(0.2, Math.min(2.5, previous.k * factor))
+          const scale = k / previous.k
+          return { k, x: px - (px - previous.x) * scale, y: py - (py - previous.y) * scale }
+        })
+      }, [])
+      const zoom = React.useCallback(factor => {
+        zoomAt(factor, canvasSize.w / 2, canvasSize.h / 2)
+      }, [zoomAt, canvasSize.w, canvasSize.h])
+
+      React.useEffect(() => { fit() }, [fit])
+
+      // Wheel zoom needs a non-passive listener: React attaches wheel handlers
+      // passively, so preventDefault inside onWheel is ignored (page scrolls).
+      React.useEffect(() => {
+        const node = canvasRef.current
+        if (node === null) return undefined
+        const onWheel = event => {
+          event.preventDefault()
+          // 以光标为锚点缩放：指哪放大哪，图形不会朝屏幕中心漂。
+          const rect = node.getBoundingClientRect()
+          zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX - rect.left, event.clientY - rect.top)
+        }
+        node.addEventListener('wheel', onWheel, { passive: false })
+        return () => node.removeEventListener('wheel', onWheel)
+      }, [zoomAt])
 
       // The sidebar shows session TITLES — but a cold goal session's title is
       // always the same boilerplate, and an ARCHIVED direction is not in the
