@@ -708,6 +708,24 @@ export async function apply(ctx, config) {
     })
   }
 
+  // ── backfill for directions that predate workspace accounting ──
+  // 0.1.x registered no workspace, and the registry's own history reconciliation
+  // runs ONCE (only while its domain is uninitialized) — so an already-existing
+  // direction would stay under 未分组 even after this upgrade. Attaching them at
+  // activation is idempotent and is the only thing that fixes the directions the
+  // user already has. Fire-and-forget: activation must not wait on the registry.
+  void store.ready.then(async () => {
+    for (const node of store.state.nodes) {
+      if (node.status === 'dropped' || typeof node.cwd !== 'string' || !existsSync(node.cwd)) continue
+      const result = await attachDirectionWorkspace(ctx, {
+        worktree: node.cwd, name: node.name, childSessionId: node.sessionId,
+      })
+      if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: 走向「${node.name}」${result.warning}`)
+      if (result.workspaceId === undefined || node.workspaceId === result.workspaceId) continue
+      await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId })).catch(() => {})
+    }
+  }).catch(() => {})
+
   // ── agent tools ──
   const TOOL_OUTPUT = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
   // p2-fix: wrap in defineTool (host-normalized schema) when available; fall

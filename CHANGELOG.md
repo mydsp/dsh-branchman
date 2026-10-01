@@ -39,16 +39,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `exec.agent` 就是调用方（`dsh-deja` 读同一处）。此前工具侧拿不到源会话，agent 开出来的
   走向子会话**必然是空的**。现在默认取 `exec.agent.session.id` 与 `header.cwd`，
   显式参数仍然优先。想克隆一条已有走向：`from: 'branchman/<名>'` 加上那条走向的会话。
+- **已有的走向也会被带上**：0.1.x 没登记过工作区，而注册表自己的历史对账**只跑一次**
+  （仅在其 domain 未初始化时），所以升级后老走向照样落在「未分组」。插件现在在 activate 时
+  遍历树里未拆除的走向，逐个补登记并挂会话，再把 `workspaceId` 写回节点。
+  注册表没起来、目录已被删、会话 id 缺失都只是跳过，不影响激活。
 - 树节点新增 `workspaceId`；`branch_tree` 的 `capabilities` 新增 `workspaceRegistry`。
 
 ### Tests
 
-- `test/seeded.mjs`：工作区记账（create + attach + 树节点记 id + drop 注销）、
+- `test/seeded.mjs`：工作区记账（create + attach + 树节点记 id + drop 注销 + **激活时给老走向补登记**）、
   按消息分叉（两个完整回合的源，`messageId` → 4 条 vs 不给 → 9 条 vs 幽灵 id → 9 条）、
   agent 工具路径（`exec.agent` → 继承 9 条，不读就是 undefined）。
   每条都验过"有牙齿"：临时还原修复后对应用例确实变红。
 - `test/client.mjs`：总览操作路由、两步确认、操作后重取树、分支请求带 `messageId`。
-- 合计 **153 项断言**（tools 31 · seeded 42 · client 55 · manifest 25），四套件全绿。
+- 合计 **156 项断言**（tools 31 · seeded 45 · client 55 · manifest 25），四套件全绿。
 
 ## [0.1.1] — 2026-09-29
 

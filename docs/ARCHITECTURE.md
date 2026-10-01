@@ -116,6 +116,11 @@ await ws.attachSession(childId)                              // 校验通过后�
 注销用的 id 在 fork 时就记进节点（`workspaceId`），老节点退回 `resolveByPath`，
 并且必须在删 worktree **之前**解析（registry 走 realpath，目录没了就解析不出来）。
 
+**升级路径**：注册表自己的历史对账（`bootstrap`）**只在其 domain 未初始化时跑一次**，
+所以 0.1.x 时代建的走向不会自动获得工作区。插件因此在 activate 时遍历树里未拆除的走向，
+逐个补登记、挂会话、把 `workspaceId` 写回节点（`void store.ready.then(…)`，不阻塞激活；
+目录已删、会话 id 缺失只跳过）。
+
 ### 3.3 被动树投影（只存元数据）
 
 ```js

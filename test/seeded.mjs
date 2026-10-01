@@ -159,9 +159,30 @@ const ctx = {
     : undefined),
 }
 
+// 0.1.x 时代的走向没有任何工作区登记，而注册表自己的历史对账**只跑一次**
+// （仅在其 domain 未初始化时）——所以插件必须在 activate 时自己补登记，
+// 否则升级后老走向照样落在「未分组」里。
+const LEGACY = '走向-老数据'
+const legacyCwd = join(SCRATCH, '.branches', LEGACY)
+await mkdir(legacyCwd, { recursive: true })
+await writeFile(TREE, JSON.stringify({
+  version: 1,
+  nodes: [{
+    name: LEGACY, cwd: legacyCwd, root: SCRATCH, branch: `branchman/${LEGACY}`,
+    sessionId: 'session-legacy', status: 'open', messageCount: 1,
+  }],
+}), 'utf8')
+
 const mod = await import(pathToFileURL(join(PKG, 'index.js')).href)
 await mod.apply(ctx, { dataFile: TREE, defaultRoot: SCRATCH, gitPath: GIT })
+await new Promise(resolve => setTimeout(resolve, 40))
 check('六个工具全部注册（含 branch_sync）', tools.size === 6, [...tools.keys()].join(','))
+check('激活时给老走向补登记工作区（否则升级后仍在「未分组」）',
+  calls.some(c => c[0] === 'ws.create' && c[1] === legacyCwd && c[2] === `走向 ${LEGACY}`),
+  JSON.stringify(calls.filter(c => c[0] === 'ws.create')))
+check('老走向的会话也挂进该工作区',
+  calls.some(c => c[0] === 'ws.attach' && c[1] === 'session-legacy'),
+  JSON.stringify(calls.filter(c => c[0] === 'ws.attach')))
 
 // ── fork with a source conversation ───────────────────────────────────────
 const forked = JSON.parse(await tools.get('branch_fork').execute({
@@ -246,6 +267,9 @@ const node = tree.nodes.find(n => n.name === NAME)
 check('树节点记录继承事件数', node?.inheritedEvents === EXPECTED_INHERITED, JSON.stringify(node))
 check('树节点记住 workspaceId（drop 时才能注销）', node?.workspaceId === 'ws-1', String(node?.workspaceId))
 check('capabilities 自报 workspaceRegistry 可用', tree.capabilities?.workspaceRegistry === true, JSON.stringify(tree.capabilities))
+check('补登记把 workspaceId 写回树节点（drop 时才能注销）',
+  tree.nodes.find(n => n.name === LEGACY)?.workspaceId === 'ws-1',
+  String(tree.nodes.find(n => n.name === LEGACY)?.workspaceId))
 
 // ── agent 工具路径：从"调用它的那条对话"分叉 ─────────────────────────────
 // dsh-tools 调 tool.execute(args, exec)，exec.agent 就是调用方（dsh-deja 也
