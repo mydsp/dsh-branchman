@@ -259,6 +259,23 @@ check('手动删除对话 / 手动删目录都在面板里说明白',
   /node\.sessionMissing === true \? React\.createElement[\s\S]{0,120}tx\('det\.sessionMissing'\)/.test(source)
   && /node\.missingDir === true \? React\.createElement[\s\S]{0,120}tx\('det\.missingDir'\)/.test(source))
 
+// ── 总览必须永远装得进窗口 ────────────────────────────────────────────────
+// 实机：窗口一小，总览的标题被切在顶上、按钮被切在底下。原因是卡片**没有
+// max-height**，画布又写死 58vh/340px —— 内容必然比窗口高，而 mask 用
+// align-items:center 居中，溢出会**两头同时出界**，顶部根本滚不到。
+check('卡片被 mask 封顶（内边距 + max-height:100% + overflow:hidden）',
+  /\.dsh-branchman-mask\{[^}]*padding:16px[^}]*box-sizing:border-box/.test(source)
+  && /\.dsh-branchman-card\{[^}]*max-height:100%[^}]*box-sizing:border-box/.test(source)
+  && /\.dsh-branchman-overview\{[^}]*overflow:hidden/.test(source))
+check('画布改成弹性（不再写死 58vh / min-height:340px）',
+  /\.dsh-branchman-canvas\{flex:1 1 auto;min-height:150px/.test(source)
+  && !/\.dsh-branchman-canvas\{height:58vh/.test(source)
+  && !/min-height:340px/.test(source))
+check('详情面板自己滚，不把底部工具栏顶出去',
+  /\.dsh-branchman-detail\{[^}]*max-height:38%;overflow:auto/.test(source))
+check('底部按钮分组（缩放一组、刷新与关闭靠右）',
+  /className: 'dsh-branchman-ovfoot'/.test(source) && /dsh-branchman-grow/.test(source))
+
 // ── 客户端调用的路由必须真的存在，而且方法对得上 ──────────────────────────
 // 这条是血换来的：迁移代码用了 `callApi('tree')`，而 callApi 一律 POST，
 // 宿主的 `/branchman/api/tree` 只接受 `req.method === 'GET'` —— 于是整段迁移

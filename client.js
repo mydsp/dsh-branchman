@@ -75,6 +75,10 @@ window.__ModuleLoader__.load({
         'ov.mainDetail': '主线（工作区主目录）',
         'det.inherited': '继承 {count} 事件',
         'det.messages': '{count} 条消息',
+        'det.branch': '分支 {branch}',
+        'det.lastActive': '最后活动 {time}',
+        'det.path': '目录 {path}',
+        'det.session': '会话 {id}',
         'det.switch': '切到该会话',
         'det.stale': '已 3 天无活动 — 考虑 merge 或 drop',
         'det.missing': '这条走向还没有绑定会话：会话可能在别处被删除，或还没建立。',
@@ -149,6 +153,10 @@ window.__ModuleLoader__.load({
         'ov.mainDetail': 'Main line (the workspace’s main directory)',
         'det.inherited': '{count} inherited events',
         'det.messages': '{count} messages',
+        'det.branch': 'branch {branch}',
+        'det.lastActive': 'last active {time}',
+        'det.path': 'dir {path}',
+        'det.session': 'session {id}',
         'det.switch': 'Switch to this session',
         'det.stale': 'No activity for 3 days — consider merge or drop',
         'det.missing': 'This direction has no session bound: it may have been deleted elsewhere, or never created.',
@@ -204,10 +212,10 @@ window.__ModuleLoader__.load({
 .dsh-branchman-btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dsh-branchman-btn:active{background:var(--dsw-alias-interactive-bg-active)}
 .dsh-branchman-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.dsh-branchman-mask{position:absolute;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-mask-1)}
-.dsh-branchman-card{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:18px;width:400px;max-width:92vw}
+.dsh-branchman-mask{position:absolute;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-mask-1);padding:16px;box-sizing:border-box;overflow:hidden}
+.dsh-branchman-card{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:18px;width:400px;max-width:100%;max-height:100%;box-sizing:border-box}
 .dsh-branchman-card h3{margin:0 0 4px;font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary)}
-.dsh-branchman-hint{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;margin-bottom:12px}
+.dsh-branchman-hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.6;margin-bottom:12px}
 .dsh-branchman-card input,.dsh-branchman-card textarea{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:7px 10px;font-size:13px;margin-bottom:8px}
 .dsh-branchman-card textarea{font:12px Inter,system-ui,sans-serif;resize:vertical;min-height:56px;margin-bottom:10px}
 .dsh-branchman-card input::placeholder,.dsh-branchman-card textarea::placeholder{color:var(--dsw-alias-label-dimmed)}
@@ -220,10 +228,17 @@ window.__ModuleLoader__.load({
 .dsh-branchman-no:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dsh-branchman-err{color:var(--dsw-alias-label-error);font-size:11px;line-height:1.5;margin:8px 0 0;min-height:14px}
 .dsh-branchman-status{color:var(--dsw-alias-label-tertiary);font-size:11px;margin:6px 0 0;min-height:14px}
-.dsh-branchman-overview{width:min(1040px,94vw);max-width:94vw;padding:16px 18px}
+/* The overview is a column that ALWAYS fits the window: the card is capped at
+   the mask's inner box, the canvas eats whatever is left, and the detail panel
+   scrolls instead of pushing the footer out. The old version had no max-height
+   and a fixed 58vh canvas, so a short window clipped the title off the top and
+   the buttons off the bottom — the flex centring pushed the overflow both ways. */
+.dsh-branchman-overview{width:min(1040px,100%);padding:16px 18px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.dsh-branchman-overview>*{flex:0 0 auto}
 .dsh-branchman-ovhead{display:flex;align-items:baseline;gap:10px}
 .dsh-branchman-ovstats{font:500 11px Inter,system-ui,sans-serif;color:var(--dsw-alias-label-tertiary)}
-.dsh-branchman-canvas{height:58vh;min-height:340px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden;cursor:grab;margin-bottom:10px;touch-action:none}
+.dsh-branchman-overview .dsh-branchman-hint{margin:0}
+.dsh-branchman-canvas{flex:1 1 auto;min-height:150px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden;cursor:grab;touch-action:none}
 .dsh-branchman-canvas:active{cursor:grabbing}
 .dsh-branchman-svg{width:100%;height:100%;display:block}
 .dsh-branchman-edge{fill:none;stroke:var(--dsw-alias-border-l3);stroke-width:1.4}
@@ -236,7 +251,7 @@ window.__ModuleLoader__.load({
 .dsh-branchman-t1{font:600 12px Inter,system-ui,sans-serif;fill:var(--dsw-alias-label-primary)}
 .dsh-branchman-t2{font:11px Inter,system-ui,sans-serif;fill:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-gnode.is-dropped .dsh-branchman-t1{fill:var(--dsw-alias-label-dimmed)}
-.dsh-branchman-detail{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);min-height:46px}
+.dsh-branchman-detail{font-size:12px;line-height:1.75;color:var(--dsw-alias-label-secondary);min-height:44px;max-height:38%;overflow:auto;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}
 .dsh-branchman-detname{font-weight:600;color:var(--dsw-alias-label-primary)}
 .dsh-branchman-detmeta{color:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-detpath{color:var(--dsw-alias-label-dimmed);word-break:break-all}
@@ -246,8 +261,8 @@ window.__ModuleLoader__.load({
 /* Detail-panel operations. The overview used to be a picture: everything a
    direction waits for (merge / sync / drop) required going back to chat and
    typing a tool call. Tokens are the ones already proven in this file. */
-.dsh-branchman-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center}
-.dsh-branchman-act{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;padding:4px 10px;font:600 11px Inter,system-ui,sans-serif;cursor:pointer}
+.dsh-branchman-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2);align-items:center}
+.dsh-branchman-act{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;padding:6px 12px;font:600 12px Inter,system-ui,sans-serif;cursor:pointer}
 .dsh-branchman-act:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dsh-branchman-act:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .dsh-branchman-act[disabled]{opacity:.5;cursor:default}
@@ -256,7 +271,11 @@ window.__ModuleLoader__.load({
    map of "what has been branched so far". */
 .dsh-branchman-gnode.is-here .dsh-branchman-box{stroke:var(--dsw-alias-brand-primary);stroke-width:2.5}
 .dsh-branchman-here{font:600 10px Inter,system-ui,sans-serif;fill:var(--dsw-alias-brand-primary)}
-.dsh-branchman-ovadd{margin:0 0 10px}
+.dsh-branchman-ovadd{margin:0;padding-top:0;border-top:0}
+/* View controls read as a toolbar, not as five equal buttons: the zoom group on
+   the left, refresh and close on the right. */
+.dsh-branchman-ovfoot{display:flex;gap:8px;align-items:center;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-branchman-ovfoot .dsh-branchman-grow{flex:1 1 auto}
 .dsh-branchman-note{font-size:11px;line-height:1.5;margin-top:6px;color:var(--dsw-alias-label-tertiary)}
 .dsh-branchman-note.is-bad{color:var(--dsw-alias-label-error)}
 .dsh-branchman-note.is-ok{color:var(--dsw-alias-state-success-primary)}
@@ -850,14 +869,18 @@ window.__ModuleLoader__.load({
         const dirty = git !== undefined && git.error === undefined && (git.dirty ?? 0) > 0
         const stale = node.lastActivityAt !== undefined && node.lastActivityAt !== null
           && (Date.now() - new Date(node.lastActivityAt).getTime()) / 86400000 > 3
+        // One labelled fact per chip, and the two long strings (session id, path)
+        // get their own labelled lines: mixed into a single `·`-joined run they
+        // were unreadable, which is what "易读性差" was about.
         const bits = []
         if (node.isMain !== true) {
-          if (node.branch !== undefined && node.branch !== null) bits.push(String(node.branch))
+          if (node.branch !== undefined && node.branch !== null) bits.push(tx('det.branch', { branch: String(node.branch) }))
           bits.push(tx('det.inherited', { count: node.inheritedEvents ?? 0 }))
           bits.push(tx('det.messages', { count: node.messageCount ?? 0 }))
         }
-        if (node.lastActivityAt !== undefined && node.lastActivityAt !== null) bits.push(new Date(node.lastActivityAt).toLocaleString())
-        if (typeof node.sessionId === 'string' && node.sessionId !== '') bits.push(node.sessionId)
+        if (node.lastActivityAt !== undefined && node.lastActivityAt !== null) {
+          bits.push(tx('det.lastActive', { time: new Date(node.lastActivityAt).toLocaleString() }))
+        }
         const hasSession = typeof node.sessionId === 'string' && node.sessionId !== ''
         const opButton = (kind, label, title, danger, blocked) => React.createElement('button', {
           type: 'button',
@@ -900,7 +923,10 @@ window.__ModuleLoader__.load({
           React.createElement('div', { className: 'dsh-branchman-detname' },
             node.isMain === true ? tx('ov.mainDetail') : `${node.name} · ${node.status ?? ''}`),
           React.createElement('div', { className: 'dsh-branchman-detmeta' }, bits.filter(Boolean).join(' · ')),
-          React.createElement('div', { className: 'dsh-branchman-detpath' }, node.cwd ?? ''),
+          React.createElement('div', { className: 'dsh-branchman-detpath' }, tx('det.path', { path: node.cwd ?? '' })),
+          hasSession
+            ? React.createElement('div', { className: 'dsh-branchman-detpath' }, tx('det.session', { id: node.sessionId }))
+            : null,
           node.isMain === true ? null : React.createElement('div', { className: 'dsh-branchman-detmeta' },
             git === undefined
               ? tx('det.gitLoading')
@@ -974,12 +1000,13 @@ window.__ModuleLoader__.load({
             transform: `translate(${Math.round(camera.x)} ${Math.round(camera.y)}) scale(${camera.k.toFixed(3)})`,
           }, renderNode(layout.root)))),
         detail(),
-        React.createElement('div', { className: 'dsh-branchman-row' },
-          React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: onClose }, tx('ov.close')),
+        React.createElement('div', { className: 'dsh-branchman-ovfoot' },
           React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: () => zoom(1 / 1.2) }, tx('ov.zoomOut')),
           React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: () => zoom(1.2) }, tx('ov.zoomIn')),
           React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: fit }, tx('ov.fit')),
-          React.createElement('button', { type: 'button', className: 'dsh-branchman-go', onClick: load }, tx('ov.refresh'))),
+          React.createElement('span', { className: 'dsh-branchman-grow' }),
+          React.createElement('button', { type: 'button', className: 'dsh-branchman-no', onClick: load }, tx('ov.refresh')),
+          React.createElement('button', { type: 'button', className: 'dsh-branchman-go', onClick: onClose }, tx('ov.close'))),
         React.createElement('div', { className: 'dsh-branchman-err' }, error)))
     }
 
