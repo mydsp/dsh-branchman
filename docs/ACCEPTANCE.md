@@ -1,28 +1,28 @@
 # 接手验收记录
 
-日期：2026-10-02。最终构建与详细证据位于 `E:\codexproject\docs\superpowers\plans\dsh-takeover-evidence`。pass、fail、unverified 是不同状态；候选验证不等于正式部署。
+更新：2026-10-02。正式配置 E:\tools\dsh-home\profiles\desktop 已切换并完成启动验收；发布 cb6b085d1f354146b632905af5684333 为 committed，stability=waived-by-user。用户明确要求「两小时测试我接受不了 尽快」，两小时测试未完成，不记为 pass。
 
-| 项目 | 当前状态 | 证据层级 |
+## 已通过的验证
+
+| 项目 | 结果与范围 | 证据 |
 |---|---|---|
-| 实际 index.js/client.js 已接新模块 | pass | 构建入口与官方 Electron 加载 |
-| 无走向会话可见、可首次分叉 | pass | 真实桌面候选 |
-| 同名跨仓库、嵌套仓库、linked worktree、detached HEAD | pass（契约层） | 真实临时 Git 与迁移测试 |
-| 指定消息继承，排除之后轮次 | pass | 真实桌面，第一轮分叉排除第二轮 |
-| 中文、二进制、未跟踪文件携带 | pass | 桌面产生的工作树与源文件 SHA256 相等 |
-| 部分宿主创建失败后继续恢复 | pass | 真实故障保留工作树，冷启动恢复唯一子会话 |
-| 同请求重试 / 并发只创建一次 | pass（实际入口层） | 操作日志、真实临时 Git、fixture 宿主 |
-| 外部分支切换、未合入提交阻止错误操作 | pass（实际入口层） | 真实 Git 负向测试 |
-| 冲突保留现场、处理后检查 | pass（实际入口层） | 真实 Git 冲突与 abort 后重新检查 |
-| 观察租约释放、服务替换、失败退避 | pass（契约与入口层） | 计数、卸载与并发测试 |
-| 列表/图形、拖动/缩放/刷新保留相机 | pass | 官方 Electron |
-| 中文/英文、深浅主题 | pass | 官方 Electron 与截图 |
-| Escape、焦点恢复 | pass（前一候选） | 最终构建需重新检查 |
-| 用户手动标题保护 | pass（插件测试） | 真实手动标题跨冷启动继续验证 |
-| v1 迁移完整保留历史、旧文件不覆盖 | pass（迁移层） | 生产数据只读 dry-run；正式运行待验证 |
-| 实际 pnpm install/prune、真实代码回滚 | unverified | 最终包待运行 |
-| 1000 会话 / 100 走向性能 | pass（Runtime，合成目录） | p95 报告；浏览器规模与帧时待检查 |
-| 20 次冷启动 | unverified | 待最终包连续检查 |
-| 最终包 2 小时交互稳定性 | unverified | 待独立记录 |
-| 正式 profile 切换与实际模型验收 | unverified | 正式配置仍保留旧版本 |
+| 实际入口接入、官方客户端加载 | pass，真实正式 Electron | production-smoke.json |
+| 普通会话可见、列表/关系图/刷新/Escape/焦点 | pass，正式配置 37 条记录 | production-smoke.json、production-overview.png |
+| v1 历史迁移 | pass，3 条变为 3 个唯一走向，原文件 SHA256 不变 | production-smoke.json、migration-dry-run.json |
+| 消息边界、中文/二进制/未跟踪文件携带 | pass，真实候选桌面及文件散列 | 会话与工作树证据、入口测试 |
+| 故障恢复、幂等/并发、外部身份改变与冲突保护 | pass，真实 Git / 实际 runtime / 故障注入；部分宿主创建失败在桌面恢复 | 110 项入口及契约测试、操作日志 |
+| branch_tree、branch_fork 模型工具入口 | pass，官方候选宿主接本地确定性模型 | tool-flow.json |
+| 用户手动标题保护、主题、语言、键盘与相机 | pass，实际桌面和标题模块测试 | 桌面截图、37 项标题测试 |
+| install/prune 与不同代码字节回滚 | pass，真实 bundled pnpm / 隔离配置，保留 v2 数据 | release-exercise.json |
+| 20 次冷启动 | pass，同一最终发行包、官方候选 Electron | cold-starts.json |
+| 1000 会话 / 100 走向 | pass，合成目录 runtime p95 32.85ms；官方 Electron 合成数据拖动帧 p95 6.2ms | runtime-performance.json、final-renderer-performance.json |
+| 正式真实模型 | pass，新会话 DeepSeek-V41-Flash 完成并回复 OK，无工具调用 | production-smoke.json |
+| 两小时稳定性 | waived-by-user，仅短时交互通过，不能代表长时稳定 | stability.json、production-acceptance.json |
 
-发布应保持 pending-validation，直至最终包所有必需门槛通过。不得以早期候选截图、fixture 性能或通过的纯模块数量填补未验证项。
+110 项 branchman、37 项标题、16 项发布测试通过。旧 232 项桩测试已被实际入口测试替代，不与新测试重复计数。详细证据目录：E:\codexproject\docs\superpowers\plans\dsh-takeover-evidence。
+
+## 发布与恢复边界
+
+branchman 0.3.0 / title-smart 0.2.0；实现提交 961df94 / 55b5cfb。原有依赖、凭据和其他 bundle 保留。旧记录 text 缺少可信历史基点，保留 recovery-required；不伪造 Git 历史。两条旧 removed 走向仍保留历史。
+
+旧代码实际字节及配置备份位于正式 profile 的 .dsh-release/cb6b085d1f354146b632905af5684333。正式旧包 schema 未知且已迁移生成 v2；不能盲目自动降级，需保留新状态并进行数据感知回滚。隔离回滚演练通过不等于正式降级已执行。

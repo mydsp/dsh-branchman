@@ -16,7 +16,7 @@ DeepSeek Harness 的工作树与会话走向管理插件。当前入口由 `src/
 
 ## 本机验证范围
 
-已在官方 `@deepseek-ai/dsh-desktop@0.2.0-rc.2`、Electron 44 的隔离配置中运行真实桌面会话流。当前正式配置没有切换。测试模型是本地确定性服务，只验证宿主调用、会话继承和插件流程，不代表真实模型生成质量。
+已在官方 `@deepseek-ai/dsh-desktop@0.2.0-rc.2`、Electron 44 的隔离配置中运行真实桌面会话流。正式配置已于 2026-10-02 切换并通过真实模型简短回复验收。复杂工具流使用本地确定性模型验收；两小时稳定性测试按用户明确要求取消，记录为 waived-by-user。
 
 完整状态见 [验收记录](docs/ACCEPTANCE.md)，安装与回滚见 [INSTALL](docs/INSTALL.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
 
