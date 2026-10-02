@@ -10,7 +10,7 @@
 // output caps, and a mapped error carrying the git exit code.
 
 import { execFile } from 'node:child_process';
-import { normalizeWindowsPath } from '../domain/paths.js';
+import { normalizePath } from '../domain/paths.js';
 
 export type GitIdentity = {
   /** Absolute git common dir (the real object store / shared .git). */
@@ -117,8 +117,8 @@ export class GitAdapter {
     const headOid = await this.#text(['rev-parse', 'HEAD']);
     const branchRef = await this.#optionalText(['symbolic-ref', '--quiet', '--short', 'HEAD']);
     return {
-      commonDir: normalizeWindowsPath(commonDir),
-      worktreePath: normalizeWindowsPath(worktreePath),
+      commonDir: normalizePath(commonDir),
+      worktreePath: normalizePath(worktreePath),
       headOid,
       branchRef,
     };

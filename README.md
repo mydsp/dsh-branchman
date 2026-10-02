@@ -1,4 +1,4 @@
-# Branchman 0.3.1
+# Branchman 0.3.2
 
 DeepSeek Harness 的会话走向与 Git 工作树管理插件。把真实父子会话、独立工作树和可恢复操作放到同一个总览。
 
@@ -27,7 +27,7 @@ DeepSeek Harness 的会话走向与 Git 工作树管理插件。把真实父子�
 
 已验证宿主 `@deepseek-ai/dsh-desktop@0.2.0-rc.2`；Electron 44 是运行时版本。运行依赖由宿主提供。
 
-从本仓库 GitHub Releases 下载 `dsh-branchman-0.3.1.tgz`，在已退出桌面的实际 profile 中安装并登记 bundle，详见 [安装说明](docs/INSTALL.md)。npm 发布完成后也可使用 `dsh-branchman@0.3.1`。
+从本仓库 GitHub Releases 下载 `dsh-branchman-0.3.2.tgz`，在已退出桌面的实际 profile 中安装并登记 bundle，详见 [安装说明](docs/INSTALL.md)。npm 发布完成后也可使用 `dsh-branchman@0.3.2`。
 
 v1 数据迁移为独立 `tree-v2.json`，保留原 `tree.json`。旧记录缺少可信基点时会标记需要恢复；降级需同时考虑状态版本。
 

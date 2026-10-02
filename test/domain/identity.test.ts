@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isInside, normalizeWindowsPath, samePath } from '../../src/domain/paths.js';
+import { isInside, normalizeWindowsPath, normalizePath, samePath } from '../../src/domain/paths.js';
 
 // B06 regression: prefix collision must not claim a sibling directory.
 test('Windows directory boundaries', () => {
@@ -39,4 +39,20 @@ test('normalise unifies separators, case and trailing slash', () => {
 test('samePath treats equivalent Windows paths as one directory', () => {
   assert.equal(samePath('E:\\repo', 'e:/repo/'), true);
   assert.equal(samePath('E:/repo', 'E:/repo-other'), false);
+});
+
+test('POSIX identities preserve case and directory boundaries', () => {
+  assert.equal(normalizePath('/tmp/Repo-A/'), '/tmp/Repo-A');
+  assert.equal(samePath('/tmp/Repo-A', '/tmp/repo-a'), false);
+  assert.equal(isInside('/tmp/Repo-A', '/tmp/Repo-A/child'), true);
+  assert.equal(isInside('/tmp/Repo-A', '/tmp/repo-a/child'), false);
+  assert.equal(isInside('/tmp/Repo-A', '/tmp/Repo-A-other'), false);
+});
+
+test('POSIX root remains absolute and contains its descendants', () => {
+  assert.equal(normalizePath('/'), '/');
+  assert.equal(samePath('/', ''), false);
+  assert.equal(isInside('/', '/tmp/Repo-A'), true);
+  assert.equal(isInside('/', 'relative/path'), false);
+  assert.equal(normalizePath('E:\\Repo\\'), 'e:/repo');
 });

@@ -9,7 +9,7 @@ import { OperationsEngine, IdempotencyConflictError, type ForkRequest, type Oper
 import { ChangeSnapshots } from './changes.js';
 import { forkBoundary } from './session-fork.js';
 import { parseForkRequest, ApiValidationError, ok, errorEnvelope } from './api.js';
-import { isInside, samePath, normalizeWindowsPath } from '../domain/paths.js';
+import { isInside, samePath, normalizePath } from '../domain/paths.js';
 import { selectLabel } from '../client/session-store.js';
 import { derivePreview } from './projection.js';
 
@@ -99,7 +99,7 @@ export class BranchmanRuntime {
     const porcelain = (await this.git.run(['worktree', 'list', '--porcelain'], { cwd: identity.worktreePath })).stdout;
     const paths = porcelain.split(/\r?\n\r?\n/).map(block => {
       const path = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] ?? null;
-      return path ? { path: normalizeWindowsPath(path), branch } : null;
+      return path ? { path: normalizePath(path), branch } : null;
     }).filter(Boolean) as Array<{ path: string; branch: string | null }>;
     const primary = paths[0]; if (!primary) throw new Error('git did not identify the primary worktree');
     let repoId = '';
@@ -186,7 +186,7 @@ export class BranchmanRuntime {
       if (s.directions.some(d => d.id === input.directionId)) return;
       const repo = s.repositories.find(r => r.id === input.repoId)!;
       const sourceTree = s.worktrees.find(w => samePath(w.canonicalPath, op!.plan!.sourcePath) && w.repoId === input.repoId);
-      if (!s.worktrees.some(w => w.id === input.worktreeId)) s.worktrees.push({ id: input.worktreeId, repoId: input.repoId, canonicalPath: normalizeWindowsPath(input.worktreePath!), branchRef: input.branch!, managedBy: 'branchman', present: true });
+      if (!s.worktrees.some(w => w.id === input.worktreeId)) s.worktrees.push({ id: input.worktreeId, repoId: input.repoId, canonicalPath: normalizePath(input.worktreePath!), branchRef: input.branch!, managedBy: 'branchman', present: true });
       for (const id of [input.sourceSessionId, input.primarySessionId]) if (id && !s.sessions.some(x => x.sessionId === id)) s.sessions.push({ sessionId: id, worktreeId: id === input.primarySessionId ? input.worktreeId : sourceTree?.id ?? null, presence: 'persisted', archived: false });
       s.directions.push({ id: input.directionId, repoId: input.repoId, worktreeId: input.worktreeId, displayName: input.displayName, primarySessionId: input.primarySessionId,
         baseOid: input.baseOid, upstreamRef: sourceTree?.branchRef ?? null, integrationTargetWorktreeId: sourceTree?.id ?? repo.primaryWorktreeId,

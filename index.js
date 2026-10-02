@@ -268,15 +268,21 @@ function normalizeWindowsPath(input) {
   const trimmed = s.replace(SEP, "/").replace(/\/+$/, "");
   return trimmed.toLowerCase();
 }
+function normalizePath(input) {
+  const s = String(input ?? "");
+  if (/^(?:[a-z]:|\\\\|\/\/)/i.test(s)) return normalizeWindowsPath(s);
+  const trimmed = s.replace(/\/+/g, "/").replace(/\/+$/, "");
+  return trimmed || (s.startsWith("/") ? "/" : "");
+}
 function isInside(root, candidate) {
-  const r = normalizeWindowsPath(root);
-  const c = normalizeWindowsPath(candidate);
+  const r = normalizePath(root);
+  const c = normalizePath(candidate);
   if (r === "" || c === "") return false;
   if (c === r) return true;
-  return c.startsWith(`${r}/`);
+  return c.startsWith(r === "/" ? "/" : `${r}/`);
 }
 function samePath(a, b) {
-  return normalizeWindowsPath(a) === normalizeWindowsPath(b);
+  return normalizePath(a) === normalizePath(b);
 }
 
 // src/host/migrate-v1.ts
@@ -289,11 +295,11 @@ var MigrationError = class extends Error {
 var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function legacyRepoKey(node) {
   const explicit = String(node.root ?? "").replace(/[\\/]+$/, "");
-  if (explicit !== "") return normalizeWindowsPath(explicit);
+  if (explicit !== "") return normalizePath(explicit);
   const cwd = String(node.cwd ?? "");
   const at = cwd.search(/[\\/]\.branches(?:[\\/]|$)/);
   const root = at > 0 ? cwd.slice(0, at) : cwd;
-  const key = normalizeWindowsPath(root);
+  const key = normalizePath(root);
   return key === "" ? null : key;
 }
 function migrateV1(raw) {
@@ -363,7 +369,7 @@ function migrateV1(raw) {
       worktrees.push({
         id: worktreeId,
         repoId,
-        canonicalPath: normalizeWindowsPath(String(node.cwd ?? node.root ?? "")),
+        canonicalPath: normalizePath(String(node.cwd ?? node.root ?? "")),
         branchRef: typeof node.branch === "string" ? node.branch : null,
         managedBy: "branchman",
         present: !isDropped
@@ -537,8 +543,8 @@ var GitAdapter = class {
     const headOid = await this.#text(["rev-parse", "HEAD"]);
     const branchRef = await this.#optionalText(["symbolic-ref", "--quiet", "--short", "HEAD"]);
     return {
-      commonDir: normalizeWindowsPath(commonDir),
-      worktreePath: normalizeWindowsPath(worktreePath),
+      commonDir: normalizePath(commonDir),
+      worktreePath: normalizePath(worktreePath),
       headOid,
       branchRef
     };
@@ -1399,7 +1405,7 @@ var BranchmanRuntime = class {
     const porcelain = (await this.git.run(["worktree", "list", "--porcelain"], { cwd: identity.worktreePath })).stdout;
     const paths2 = porcelain.split(/\r?\n\r?\n/).map((block) => {
       const path = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] ?? null;
-      return path ? { path: normalizeWindowsPath(path), branch } : null;
+      return path ? { path: normalizePath(path), branch } : null;
     }).filter(Boolean);
     const primary = paths2[0];
     if (!primary) throw new Error("git did not identify the primary worktree");
@@ -1498,7 +1504,7 @@ var BranchmanRuntime = class {
       if (s.directions.some((d) => d.id === input.directionId)) return;
       const repo = s.repositories.find((r) => r.id === input.repoId);
       const sourceTree = s.worktrees.find((w) => samePath(w.canonicalPath, op.plan.sourcePath) && w.repoId === input.repoId);
-      if (!s.worktrees.some((w) => w.id === input.worktreeId)) s.worktrees.push({ id: input.worktreeId, repoId: input.repoId, canonicalPath: normalizeWindowsPath(input.worktreePath), branchRef: input.branch, managedBy: "branchman", present: true });
+      if (!s.worktrees.some((w) => w.id === input.worktreeId)) s.worktrees.push({ id: input.worktreeId, repoId: input.repoId, canonicalPath: normalizePath(input.worktreePath), branchRef: input.branch, managedBy: "branchman", present: true });
       for (const id of [input.sourceSessionId, input.primarySessionId]) if (id && !s.sessions.some((x) => x.sessionId === id)) s.sessions.push({ sessionId: id, worktreeId: id === input.primarySessionId ? input.worktreeId : sourceTree?.id ?? null, presence: "persisted", archived: false });
       s.directions.push({
         id: input.directionId,

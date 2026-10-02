@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { newId, validateStateV2, type StateV2 } from './store.js';
 import type { Direction, ForkEdge, SessionLink, Worktree } from '../domain/model.js';
-import { normalizeWindowsPath } from '../domain/paths.js';
+import { normalizePath } from '../domain/paths.js';
 
 /** A legacy v1 tree node — only the fields the old code actually persisted. */
 type LegacyNode = {
@@ -55,11 +55,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** Best-effort extraction of the canonical repo path a legacy node belongs to. */
 function legacyRepoKey(node: LegacyNode): string | null {
   const explicit = String(node.root ?? '').replace(/[\\/]+$/, '');
-  if (explicit !== '') return normalizeWindowsPath(explicit);
+  if (explicit !== '') return normalizePath(explicit);
   const cwd = String(node.cwd ?? '');
   const at = cwd.search(/[\\/]\.branches(?:[\\/]|$)/);
   const root = at > 0 ? cwd.slice(0, at) : cwd;
-  const key = normalizeWindowsPath(root);
+  const key = normalizePath(root);
   return key === '' ? null : key;
 }
 
@@ -149,7 +149,7 @@ export function migrateV1(raw: unknown): MigrationReport {
       worktrees.push({
         id: worktreeId,
         repoId,
-        canonicalPath: normalizeWindowsPath(String(node.cwd ?? node.root ?? '')),
+        canonicalPath: normalizePath(String(node.cwd ?? node.root ?? '')),
         branchRef: typeof node.branch === 'string' ? node.branch : null,
         managedBy: 'branchman',
         present: !isDropped,

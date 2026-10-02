@@ -1,4 +1,4 @@
-# Branchman 0.3.1
+# Branchman 0.3.2
 
 Conversation directions and independent Git worktrees for DeepSeek Harness.
 
@@ -16,7 +16,7 @@ Regular uncommitted files, including CJK paths and binary contents, can be carri
 
 ## Installation
 
-Verified with `@deepseek-ai/dsh-desktop@0.2.0-rc.2`; Electron 44 is the runtime version. Download `dsh-branchman-0.3.1.tgz` from GitHub Releases, close the desktop and install/register the bundle in its actual profile. See [installation](docs/INSTALL.md). Runtime React and host services are provided by DSH.
+Verified with `@deepseek-ai/dsh-desktop@0.2.0-rc.2`; Electron 44 is the runtime version. Download `dsh-branchman-0.3.2.tgz` from GitHub Releases, close the desktop and install/register the bundle in its actual profile. See [installation](docs/INSTALL.md). Runtime React and host services are provided by DSH.
 
 Migration writes a separate `tree-v2.json` and preserves v1 `tree.json`. Unknown historical bases remain recovery states. Downgrades must account for data compatibility.
 

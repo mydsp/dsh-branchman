@@ -4,14 +4,14 @@
 
 ## 从 GitHub 发行包安装
 
-1. 下载本仓库 Releases 的 `dsh-branchman-0.3.1.tgz`。
+1. 下载本仓库 Releases 的 `dsh-branchman-0.3.2.tgz`。
 2. 在桌面实际 profile 目录，用该 profile 现有的包管理器安装。以下以 pnpm 为例（可使用桌面自带的 pnpm）：
 
 ```powershell
 # 把此路径替换为本机实际的 profile 目录
 $profileDir = "<DSH_HOME>/profiles/desktop"
 Set-Location -LiteralPath $profileDir
-pnpm add --save-exact --ignore-scripts "<下载路径>/dsh-branchman-0.3.1.tgz"
+pnpm add --save-exact --ignore-scripts "<下载路径>/dsh-branchman-0.3.2.tgz"
 ```
 
 3. 确认 profile 的 package.json 中，`dsh.profile.bundles` 数组包含 `dsh-branchman`，保留其他已有 bundle。可以在 profile 目录执行以下 Node 命令：
@@ -26,7 +26,7 @@ node -e 'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync("package
 
 ## npm 安装
 
-npm 版本可用后，第二步可改为 `pnpm add --save-exact --ignore-scripts dsh-branchman@0.3.1`，仍需登记 bundle。
+npm 版本可用后，第二步可改为 `pnpm add --save-exact --ignore-scripts dsh-branchman@0.3.2`，仍需登记 bundle。
 
 ## v1 到 v2
 
