@@ -1,40 +1,41 @@
-# 本机安装、验证与恢复
+# 安装、升级与恢复
 
-当前验证宿主：`@deepseek-ai/dsh-desktop@0.2.0-rc.2`。不能用 Electron 版本作为 DSH 版本。其他宿主版本需重新验证以下服务契约。
+已验证宿主 `@deepseek-ai/dsh-desktop@0.2.0-rc.2`。请先确认桌面实际使用的 `DSH_HOME` 与 `profiles/desktop`，然后退出桌面及其宿主进程。升级前备份 profile 配置和 branchman 状态。
 
-## 校验包（不替换 profile）
+## 从 GitHub 发行包安装
 
-```powershell
-pwsh -File E:\dsh-branchman\scripts\deploy-local.ps1 -ValidateOnly
-```
-
-该脚本会构建真实入口、从仓库根打包、读取 npm 返回的真实文件名并校验，然后删除本次临时 tar。可从任意 cwd 执行。
-
-## 候选配置安装
-
-先退出 DSH，包括由它启动的宿主进程。通过 `E:\tools\dsh-tools\release.py deploy` 指定候选 `--profile-dir` 与一个或多个 `--artifact`，两插件应一起发布。工具保留校验过的不可变 tar，为候选运行真实 pnpm install，然后替换包与注册信息。不要手动覆盖 node_modules 中的四个文件。
-
-独立 `DSH_HOME`、Electron user-data 与测试仓库应位于 `E:\tools`；不得复制真实凭据到候选环境。使用本地测试模型验证 UI 和会话流，随后再验证实际模型行为。
-
-正式路径目前是 `E:\tools\dsh-home\profiles\desktop`；本次验收路径是 `E:\tools\dsh-candidate-v2\profiles\desktop`。不能把候选通过当成正式已切换。
-
-## 回滚与中断恢复
+1. 下载本仓库 Releases 的 `dsh-branchman-0.3.1.tgz`。
+2. 在桌面实际 profile 目录，用该 profile 现有的包管理器安装。以下以 pnpm 为例（可使用桌面自带的 pnpm）：
 
 ```powershell
-python E:\tools\dsh-tools\release.py rollback --profile-dir <profile目录> --release-id <32位ID>
-python E:\tools\dsh-tools\release.py recover --profile-dir <profile目录> --release-id <32位ID>
+# 把此路径替换为本机实际的 profile 目录
+$profileDir = "<DSH_HOME>/profiles/desktop"
+Set-Location -LiteralPath $profileDir
+pnpm add --save-exact --ignore-scripts "<下载路径>/dsh-branchman-0.3.1.tgz"
 ```
 
-rollback 用于 pending-validation/committed 发布；recover 用于 prepared/switching/packages-replaced/recovery-required 中断记录。所有备份 manifest 与实际包字节在触碰当前配置前校验。配置被用户修改、备份损坏或不兼容旧 schema 遇到新状态写入时会拒绝自动回滚。
+3. 确认 profile 的 package.json 中，`dsh.profile.bundles` 数组包含 `dsh-branchman`，保留其他已有 bundle。可以在 profile 目录执行以下 Node 命令：
 
-`.dsh-release/<ID>/record.json` 是发布记录，backup 是真实恢复来源。不得仅保留哈希而删除需要回滚的包。当前操作 journals 与 v2 数据不随代码回滚删除。
+```powershell
+node -e 'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.dsh??={};p.dsh.profile??={};const b=p.dsh.profile.bundles??=[];if(!Array.isArray(b))throw Error("bundles must be an array");if(!b.includes("dsh-branchman"))b.push("dsh-branchman");p.dsh.profile.bundles=b;fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n");'
+```
 
-## 静态诊断与最终验收
+4. 重启桌面，确认侧栏底部出现「走向总览」，检查已有会话及列表/关系图。
 
-`dsh-doctor.py --profile-dir <目录> --doctor-json` 只报告包注册、导出与字节一致性，宿主装配和交互保持独立状态。
+仅安装 tar 不会完成 bundle 登记。不要运行中的手工覆盖部分入口文件。安装或启动失败时退出桌面，以备份恢复 profile 配置、lockfile 与完整依赖目录。
 
-`finalize` 要求同一个 releaseId 的验收报告对 coldStart、clientLoaded、coreSessionFlow、installPrune、rollback、performance、stability 全部为 pass。未完成项目不能以数量多的单测替代。
+## npm 安装
+
+npm 版本可用后，第二步可改为 `pnpm add --save-exact --ignore-scripts dsh-branchman@0.3.1`，仍需登记 bundle。
+
+## v1 到 v2
+
+首次启动从原 `branchman/tree.json` 迁移到独立 `branchman/tree-v2.json`，原文件保留。旧数据无法证明历史基点时显示恢复状态。恢复旧代码前必须确认能读取当前状态；不能删除新状态并重新迁移来假装回滚。
+
+## 维护者本机发行工具
+
+`scripts/deploy-local.ps1` 是维护者环境的事务部署入口，依赖另行提供的 `dsh-tools/release.py`；不属于上述普通使用者安装要求。它校验 tar、登记依赖/bundle、运行 pnpm，再整组替换并保留实际旧字节。`rollback/recover` 先检查备份完整性与数据兼容性。未完成桌面验收保持 pending-validation；长期测试若由本机用户明确取消，必须记录 waived-by-user 与授权，不记为 pass。
 
 ## CLI
 
-`scripts/branchman.ps1 -Action tree -BaseUrl <本机宿主URL>`；写操作通过 `-BodyFile` 提供 JSON。认证链接只用于建立 cookie，不应写入公开日志。脚本验证 protocolVersion/schemaVersion，操作非 succeeded 时退出码为 1。CLI 不直接更改 Git 或 JSON 状态。
+`scripts/branchman.ps1 -Action tree -BaseUrl <本机宿主URL>`。写操作通过 `-BodyFile` 提供 JSON；认证链接只用于建立 cookie，不写入公开日志。CLI 验证协议版本并使用同一个宿主 API，不直接更改 Git 或 JSON 状态。

@@ -1,17 +1,32 @@
-# Branchman 0.3.0
+# Branchman 0.3.1
 
-Independent Git worktrees and conversation directions for DeepSeek Harness.
+Conversation directions and independent Git worktrees for DeepSeek Harness.
 
-The actual host and client entries are built from `src/host/runtime.ts` and `src/client/entry.ts`. The overview includes ordinary conversations even before any direction exists. Direction names are display labels; UUIDs identify repositories, worktrees and directions.
+![Separate main trees](docs/overview.png)
 
-Create a direction from the composer or a completed assistant message. Inherited history ends at the selected completed turn. Blank history is also supported. Handoff notes are saved in direction details and are not automatically submitted to the model.
+[中文](README.md) · [Installation](docs/INSTALL.md) · [Acceptance scope](docs/ACCEPTANCE.md)
 
-Uncommitted regular files, including CJK names and binary contents, can be carried with byte verification. Symlinks, submodules and `.branches` contents are excluded. Merge, sync and removal verify actual worktree ownership. Dirty files, unmerged commits and conflicts block unsafe cleanup.
+## What changed
 
-Durable journals make interrupted forks recoverable without creating duplicate children. The UI exposes recovery states, supports list/graph views, pagination, search, keyboard interaction and host theme/locale changes.
+Independent main trees occupy separate cards. The outline shows real ancestry with indentation and collapse controls. Repository and main-tree filters, ancestor-preserving search/pagination, readable default zoom, optional details and selected-node focus make larger forests easier to navigate. Refresh preserves the camera.
 
-Verified locally with official `@deepseek-ai/dsh-desktop@0.2.0-rc.2` and Electron 44 in an isolated profile. Production has not been switched. The acceptance model is a local deterministic service; this validates integration rather than model quality.
+Create a direction from the composer or a completed assistant message. History stops at the selected completed turn; blank history is supported. UUIDs identify worktrees and directions; names are display labels. Handoff notes are saved rather than automatically sent to the model.
 
-See [acceptance](docs/ACCEPTANCE.md), [installation](docs/INSTALL.md), [architecture](docs/ARCHITECTURE.md) and [host contracts](docs/CONFORMANCE.md).
+Regular uncommitted files, including CJK paths and binary contents, can be carried with byte verification. Symlinks, submodules and `.branches` are excluded. Merge, sync and removal check real worktree ownership; dirty files, unmerged commits and conflicts block the corresponding operation. Durable journals support interrupted-fork recovery without duplicate children.
 
-Development: `npm ci`, `npm test`, `npm run build`, then `npm pack --ignore-scripts`. The build uses esbuild from `E:\tools\dsh-build-tools` or `DSH_BUILD_TOOLS`. Runtime React and host services are provided by DSH.
+## Installation
+
+Verified with `@deepseek-ai/dsh-desktop@0.2.0-rc.2`; Electron 44 is the runtime version. Download `dsh-branchman-0.3.1.tgz` from GitHub Releases, close the desktop and install/register the bundle in its actual profile. See [installation](docs/INSTALL.md). Runtime React and host services are provided by DSH.
+
+Migration writes a separate `tree-v2.json` and preserves v1 `tree.json`. Unknown historical bases remain recovery states. Downgrades must account for data compatibility.
+
+## Development
+
+```sh
+npm ci
+npm test
+npm run build
+npm pack --ignore-scripts
+```
+
+Build dependencies are included in the checkout. `DSH_BUILD_TOOLS` optionally selects an existing shared esbuild installation. Published packages contain built entries. See [architecture](docs/ARCHITECTURE.md) and [host contracts](docs/CONFORMANCE.md).
