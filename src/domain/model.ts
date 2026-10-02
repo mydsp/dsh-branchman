@@ -40,6 +40,7 @@ export type Repo = {
   id: string;
   canonicalCommonDir: string;
   primaryWorktreeId: string;
+  identityVerified?: boolean;
 };
 
 export type Worktree = {
@@ -48,6 +49,7 @@ export type Worktree = {
   canonicalPath: string;
   branchRef: string | null;
   managedBy: 'branchman' | 'external';
+  present?: boolean;
 };
 
 export type SessionLink = {
@@ -67,16 +69,23 @@ export type Direction = {
   upstreamRef: string | null;
   integrationTargetWorktreeId: string;
   state: 'creating' | 'ready' | 'conflicted' | 'recovery-required' | 'removed';
+  brief?: string;
+  summary?: string;
+  recoveryReasons?: string[];
+  workspaceId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  mergedAt?: string | null;
 };
 
 export type ForkEdge = {
   id: string;
   sourceSessionId: string;
   targetSessionId: string;
-  boundarySeq: number;
+  boundarySeq: number | null;
   boundaryMessageId: string | null;
   inheritedEventCount: number;
-  operationId: string;
+  operationId: string | null;
 };
 
 export type Operation = {

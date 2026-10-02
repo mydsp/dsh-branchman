@@ -1,6 +1,7 @@
 {
   "name": "dsh-branchman",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "branchmanStateSchema": 2,
   "description": "Tree-branching workspace plugin for DeepSeek Harness: open an engineering direction as one atom — a git worktree plus a child session that inherits the conversation, wired into a tree you can see.",
   "keywords": [
     "deepseek-harness",
@@ -35,8 +36,8 @@
     "docs/",
     "locale/*.json",
     "icon.svg",
-    "scripts/",
-    "test/"
+    "scripts/deploy-local.ps1",
+    "scripts/branchman.ps1"
   ],
   "scripts": {
     "test": "node test/run.mjs",
@@ -44,7 +45,8 @@
     "test:contract": "tsc -p tsconfig.test.json && node --test \"dist-test/test/contract/*.test.js\"",
     "test:operations": "tsc -p tsconfig.test.json && node --test \"dist-test/test/operations/*.test.js\"",
     "typecheck": "tsc -p tsconfig.json",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json && node scripts/build.mjs",
+    "prepack": "npm run build"
   },
   "repository": {
     "type": "git",

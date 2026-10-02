@@ -79,29 +79,26 @@ test('a create-worktree failure owns nothing to compensate', async () => {
   assert.equal(rec.created.some(c => c.startsWith('wt:')), false, 'no worktree should have been created');
 });
 
-test('a late failure (commit-direction) still compensates the worktree', async () => {
+test('a late failure preserves the child worktree and requires reconciliation', async () => {
   const rec = phaseRecorder('commit-direction');
   const engine = new OperationsEngine(rec.effects);
   const result = await engine.fork(baseFork());
-  assert.equal(result.state, 'failed');
-  assert.ok(rec.created.some(c => c.startsWith('removed:')), 'worktree must be compensated');
+  assert.equal(result.state, 'recovery-required');
+  assert.equal(rec.created.some(c => c.startsWith('removed:')), false, 'a child session still needs its worktree');
   assert.equal(rec.created.some(c => c.startsWith('direction:')), false, 'no direction persisted');
 });
 
-test('operations can be inspected for pending/failed recovery after a crash', async () => {
+test('an incomplete host side effect exposes resources requiring reconciliation', async () => {
   const rec = phaseRecorder('create-session');
   const engine = new OperationsEngine(rec.effects);
   const failed = await engine.fork(baseFork());
 
-  // Simulate a restart: the engine's record map is the only state; inspect it.
   const op = engine.getOperation(failed.operationId);
   assert.ok(op);
-  assert.equal(op.state, 'failed');
+  assert.equal(op.state, 'recovery-required');
   assert.equal(op.phase, 'create-session');
-  // A fresh engine (new process) would re-hydrate from the operation log; here
-  // we assert the operation record is complete enough to drive recovery.
   const record: OperationRecord = engine.getByRequestId('req-r')!;
   assert.equal(record.requestId, 'req-r');
   assert.equal(record.kind, 'fork');
-  assert.ok(record.ownedResources.length >= 0);
+  assert.ok(record.ownedResources.some(r => r.startsWith('worktree:')));
 });

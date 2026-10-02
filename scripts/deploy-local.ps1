@@ -11,12 +11,13 @@
 param(
   # 注意：不能叫 $Profile —— 那是 PowerShell 的保留自动变量（PS 5.1 会串值）
   [Alias('Profile')]
-  [string]$ProfileDir = 'E:\tools\dsh-home\profiles\desktop'
+  [string]$ProfileDir = 'E:\tools\dsh-home\profiles\desktop',
+  [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$python = 'C:\Users\L\.workbuddy\binaries\python\versions\3.13.12\python.exe'
+$python = (Get-Command python -ErrorAction Stop).Source
 $release = 'E:\tools\dsh-tools\release.py'
 
 if (-not (Test-Path (Join-Path $ProfileDir 'package.json'))) {
@@ -24,20 +25,27 @@ if (-not (Test-Path (Join-Path $ProfileDir 'package.json'))) {
 }
 
 # 1. 打包成 npm 产物（真实 tar，含 files/exports/locale/patch）
-$tarball = Join-Path $repo 'dsh-branchman.tgz'
-& npm pack --pack-destination $repo 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'npm pack 失败' }
-
+Push-Location $repo
+$tarball = $null
 try {
+  & npm run build
+  if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+  $packed = (& npm pack --ignore-scripts --json --pack-destination $repo) -join "`n"
+  if ($LASTEXITCODE -ne 0) { throw 'npm pack failed' }
+  $result = @($packed | ConvertFrom-Json)
+  if ($result.Count -ne 1) { throw 'Expected one artifact' }
+  $tarball = Join-Path $repo $result[0].filename
   # 2. 校验产物（先不落盘，CSP 禁令 / locale 缺失 / 客户端入口缺失都会在这里拦下）
   & $python $release validate --artifact $tarball
   if ($LASTEXITCODE -ne 0) { throw '产物校验失败，未落盘' }
 
+  if ($ValidateOnly) { return }
   # 3. 事务化部署（校验通过才替换，失败自动整组回滚）
   & $python $release deploy --artifact $tarball --profile-dir $ProfileDir
   if ($LASTEXITCODE -ne 0) { throw '部署失败（已整组回滚）' }
 
-  Write-Host "`n同步完成。现在**完全退出 DSH（含托盘图标）再启动**——插件代码不热重载。" -ForegroundColor Cyan
+  Write-Host 'Release is pending validation. Start DSH and complete desktop acceptance before finalizing.' -ForegroundColor Cyan
 } finally {
-  if (Test-Path $tarball) { Remove-Item $tarball -Force }
+  Pop-Location
+  if ($tarball -and (Test-Path -LiteralPath $tarball)) { Remove-Item -LiteralPath $tarball -Force }
 }

@@ -43,11 +43,11 @@ test('migrates a normal node into a direction + worktree + session', () => {
   const state = report.state as StateV2;
   assert.equal(state.version, 2);
   assert.equal(state.repositories.length, 1);
-  assert.equal(state.worktrees.length, 1);
+  assert.equal(state.worktrees.length, 2);
   assert.equal(state.directions.length, 1);
   assert.equal(state.directions[0]?.displayName, '走向A');
   assert.equal(state.directions[0]?.primarySessionId, 'session-1');
-  assert.equal(state.sessions.length, 1);
+  assert.equal(state.sessions.length, 2);
   assert.equal(state.sessions[0]?.sessionId, 'session-1');
   assert.equal(state.forkEdges.length, 1);
   assert.equal(state.forkEdges[0]?.sourceSessionId, 'parent-1');
@@ -59,13 +59,15 @@ test('a dropped node keeps identity but is not re-created as a worktree', () => 
   const state = report.state as StateV2;
   assert.equal(state.directions.length, 1);
   assert.equal(state.directions[0]?.state, 'removed');
-  assert.equal(state.worktrees.length, 0, 'dropped node must not recreate a worktree');
+  assert.equal(state.worktrees.find(w => w.id === state.directions[0]?.worktreeId)?.present, false, 'historical metadata must mark the worktree absent');
+  assert.equal(state.forkEdges[0]?.boundarySeq, null);
+  assert.equal(state.forkEdges[0]?.operationId, null);
 });
 
 test('same-name nodes in different repos produce distinct direction ids', () => {
   const report = migrateV1(v1([
     node({ name: 'same', root: 'E:/repo-one', cwd: 'E:/repo-one/.branches/same' }),
-    node({ name: 'same', root: 'F:/repo-two', cwd: 'F:/repo-two/.branches/same' }),
+    node({ name: 'same', root: 'F:/repo-two', cwd: 'F:/repo-two/.branches/same', sessionId: 'session-two' }),
   ]));
   const state = report.state as StateV2;
   assert.equal(state.directions.length, 2);
@@ -93,4 +95,22 @@ test('migration output always passes the v2 schema', () => {
   assert.ok(state.revision >= 0);
   assert.equal(state.directions.length, 2);
   assert.equal(state.forkEdges.length, 2);
+});
+
+test('migration preserves handoff, preview, workspace and timestamps without inventing a base or cut', () => {
+  const { state } = migrateV1(v1([node({ brief:'handoff', preview:'latest summary', workspaceId:'workspace-old', createdAt:'created', updatedAt:'updated', mergedAt:'merged', inheritedEvents:27 })]));
+  const d = state.directions[0]!;
+  assert.equal(d.brief,'handoff'); assert.equal(d.summary,'latest summary'); assert.equal(d.workspaceId,'workspace-old');
+  assert.equal(d.createdAt,'created'); assert.equal(d.updatedAt,'updated'); assert.equal(d.mergedAt,'merged');
+  assert.equal(d.baseOid,''); assert.equal(state.forkEdges[0]?.boundarySeq,null); assert.equal(state.forkEdges[0]?.inheritedEventCount,27);
+});
+
+test('nested directions retain their actual parent worktree as integration target', () => {
+  const { state } = migrateV1(v1([node(), node({name:'child',parentName:'走向A',cwd:'E:/repo/.branches/child',sessionId:'child-session'})]));
+  assert.equal(state.directions[1]?.integrationTargetWorktreeId,state.directions[0]?.worktreeId);
+});
+
+test('a dangling parent in one repo does not mark a same-name direction in another repo', () => {
+  const { state } = migrateV1(v1([node({parentName:'ghost'}),node({root:'F:/other',cwd:'F:/other/.branches/走向A',sessionId:'other-session'})]));
+  assert.equal(state.directions[0]?.recoveryReasons?.length,1); assert.deepEqual(state.directions[1]?.recoveryReasons,[]);
 });

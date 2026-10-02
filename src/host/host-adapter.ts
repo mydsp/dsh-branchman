@@ -21,6 +21,8 @@ export type Presence = 'live' | 'persisted' | 'missing' | 'unknown';
 export type Observation = {
   events: readonly unknown[];
   cursor: number;
+  header?: any;
+  projections?: any;
 };
 
 /**
@@ -33,6 +35,8 @@ export type ObservationLease = {
   source: 'live' | 'prepared';
   events: readonly unknown[];
   cursor: number;
+  header?: any;
+  projections?: any;
   retain?(): ObservationLease;
   [Symbol.dispose](): void;
 };
@@ -65,6 +69,7 @@ export type HostServices = {
 export class HostAdapter {
   #services: HostServices;
   #disposed = false;
+  #generation = 0;
 
   constructor(services: HostServices = {}) {
     this.#services = { ...services };
@@ -72,12 +77,14 @@ export class HostAdapter {
 
   /** Replace a service binding; returns a disposer that only clears ITS binding. */
   bind<K extends keyof HostServices>(key: K, value: HostServices[K]): () => void {
+    this.#assertActive();
+    this.#generation++;
     this.#services[key] = value;
     const current = value;
     return () => {
       // Only clear the same reference this binding installed — a later bind of
       // the same key (or a disposal) must not be wiped by an older disposer.
-      if (this.#services[key] === current) this.#services[key] = null;
+      if (this.#services[key] === current) { this.#services[key] = null; this.#generation++; }
     };
   }
 
@@ -98,9 +105,12 @@ export class HostAdapter {
     this.#assertActive();
     const query = this.#services.sessionQuery;
     if (query == null) throw new Error('branchman: sessionQuery is not available');
+    const generation = this.#generation;
     const lease = await query.observeSession(sessionId);
     try {
-      const observation: Observation = { events: lease.events, cursor: lease.cursor };
+      this.#assertActive();
+      if (generation !== this.#generation) throw new Error('branchman: host services changed during observation');
+      const observation: Observation = { events: lease.events, cursor: lease.cursor, header: lease.header, projections: lease.projections };
       return await fn(observation);
     } finally {
       lease[Symbol.dispose]();
@@ -121,8 +131,10 @@ export class HostAdapter {
     }
     const query = this.#services.sessionQuery;
     if (query == null || typeof query.listSessions !== 'function') return 'unknown';
+    const generation = this.#generation;
     try {
       const records = await query.listSessions();
+      if (this.#disposed || generation !== this.#generation) return 'unknown';
       for (const record of records) {
         if (record?.header?.id === sessionId) return 'persisted';
       }
@@ -134,6 +146,8 @@ export class HostAdapter {
 
   async dispose(): Promise<void> {
     this.#disposed = true;
+    this.#generation++;
+    this.#services = {};
   }
 
   #assertActive(): void {

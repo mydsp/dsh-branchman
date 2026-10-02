@@ -20,10 +20,17 @@ type LegacyNode = {
   status?: string | null;
   droppedAt?: string | null;
   mergedAt?: string | null;
+  brief?: string;
+  inheritedEvents?: number;
+  preview?: string;
+  workspaceId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type Unresolved = {
   legacyName: string;
+  repoKey?: string | null;
   reason: string;
 };
 
@@ -82,6 +89,12 @@ export function migrateV1(raw: unknown): MigrationReport {
       status: typeof value.status === 'string' ? value.status : null,
       droppedAt: typeof value.droppedAt === 'string' ? value.droppedAt : null,
       mergedAt: typeof value.mergedAt === 'string' ? value.mergedAt : null,
+      brief: typeof value.brief === 'string' ? value.brief : '',
+      inheritedEvents: Number.isSafeInteger(value.inheritedEvents) && (value.inheritedEvents as number) >= 0 ? value.inheritedEvents as number : 0,
+      preview: typeof value.preview === 'string' ? value.preview : '',
+      workspaceId: typeof value.workspaceId === 'string' ? value.workspaceId : undefined,
+      createdAt: typeof value.createdAt === 'string' ? value.createdAt : undefined,
+      updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : undefined,
     };
   });
 
@@ -91,18 +104,17 @@ export function migrateV1(raw: unknown): MigrationReport {
   // Repos, keyed by canonical common-dir proxy (root path). v1 has no real
   // common-dir, so we merge by canonical root and note that git reconciliation
   // happens in operations, not here.
-  const repoByKey = new Map<string, { id: string; canonicalCommonDir: string; primaryWorktreeId: string }>();
+  const primaryTrees: Worktree[] = [];
+  const repoByKey = new Map<string, { id: string; canonicalCommonDir: string; primaryWorktreeId: string; identityVerified: boolean }>();
   const repoIdOf = (key: string): string => {
     let repo = repoByKey.get(key);
     if (repo === undefined) {
-      repo = { id: newId(), canonicalCommonDir: key, primaryWorktreeId: newId() };
+      repo = { id: newId(), canonicalCommonDir: key, primaryWorktreeId: newId(), identityVerified: false };
       repoByKey.set(key, repo);
+      primaryTrees.push({ id: repo.primaryWorktreeId, repoId: repo.id, canonicalPath: key, branchRef: null, managedBy: 'external' });
     }
     return repo.id;
   };
-
-  const byName = new Map<string, LegacyNode>();
-  for (const node of nodes) byName.set(node.name, node);
 
   const directions: Direction[] = [];
   const sessions: SessionLink[] = [];
@@ -123,7 +135,7 @@ export function migrateV1(raw: unknown): MigrationReport {
   for (const node of nodes) {
     const repoKey = legacyRepoKey(node);
     if (repoKey === null) {
-      unresolved.push({ legacyName: node.name, reason: 'no root/cwd to derive a repository' });
+      unresolved.push({ legacyName: node.name, repoKey, reason: 'no root/cwd to derive a repository' });
       continue;
     }
     const repoId = repoIdOf(repoKey);
@@ -132,14 +144,15 @@ export function migrateV1(raw: unknown): MigrationReport {
     const primarySessionId = typeof node.sessionId === 'string' && node.sessionId !== '' ? node.sessionId : null;
     const directionId = nodeId.get(idKeyOf(node)) ?? newId();
 
-    if (!isDropped) {
-      // A dropped node keeps its identity but its worktree is not recreated.
+    {
+      // Metadata preserves historical references; migration never creates directories.
       worktrees.push({
         id: worktreeId,
         repoId,
         canonicalPath: normalizeWindowsPath(String(node.cwd ?? node.root ?? '')),
         branchRef: typeof node.branch === 'string' ? node.branch : null,
         managedBy: 'branchman',
+        present: !isDropped,
       });
     }
 
@@ -155,6 +168,12 @@ export function migrateV1(raw: unknown): MigrationReport {
       upstreamRef: null,
       integrationTargetWorktreeId: repoByKey.get(repoKey)?.primaryWorktreeId ?? '',
       state: isDropped ? 'removed' : 'recovery-required',
+      brief: node.brief ?? '',
+      summary: node.preview ?? '',
+      ...(node.workspaceId ? { workspaceId: node.workspaceId } : {}),
+      ...(node.createdAt ? { createdAt: node.createdAt } : {}),
+      ...(node.updatedAt ? { updatedAt: node.updatedAt } : {}),
+      mergedAt: node.mergedAt ?? null,
     });
 
     if (primarySessionId !== null) {
@@ -170,14 +189,16 @@ export function migrateV1(raw: unknown): MigrationReport {
   // Fork edges from parentSessionId (session lineage), independent of repo.
   for (const node of nodes) {
     if (node.parentSessionId != null && node.parentSessionId !== '' && node.sessionId != null && node.sessionId !== '') {
+      if (!sessions.some(s => s.sessionId === node.parentSessionId)) sessions.push({ sessionId: node.parentSessionId, worktreeId: null, presence: 'unknown', archived: false });
+      if (!sessions.some(s => s.sessionId === node.sessionId)) continue;
       forkEdges.push({
         id: newId(),
         sourceSessionId: node.parentSessionId,
         targetSessionId: node.sessionId,
-        boundarySeq: 0,
+        boundarySeq: null,
         boundaryMessageId: null,
-        inheritedEventCount: 0,
-        operationId: newId(),
+        inheritedEventCount: node.inheritedEvents ?? 0,
+        operationId: null,
       });
     }
   }
@@ -186,7 +207,7 @@ export function migrateV1(raw: unknown): MigrationReport {
     version: 2,
     revision: 0,
     repositories: [...repoByKey.values()].map(r => ({ ...r })),
-    worktrees,
+    worktrees: [...primaryTrees, ...worktrees],
     sessions,
     directions,
     forkEdges,
@@ -204,11 +225,30 @@ export function migrateV1(raw: unknown): MigrationReport {
     const parentKey = `${legacyRepoKey(node) ?? '(no-repo)'}\u0000${node.parentName}`;
     const target = directionIdByNameRepo.get(parentKey);
     if (target === undefined || target === '') {
-      unresolved.push({ legacyName: node.name, reason: `parentName "${node.parentName}" not found in its repo` });
+      unresolved.push({ legacyName: node.name, repoKey:legacyRepoKey(node), reason: `parentName "${node.parentName}" not found in its repo` });
+    }
+    const visited = new Set<string>([idKeyOf(node)]);
+    let parent: string | null | undefined = node.parentName;
+    while (parent) {
+      const key: string = `${legacyRepoKey(node) ?? '(no-repo)'}\u0000${parent}`;
+      if (visited.has(key)) { unresolved.push({ legacyName: node.name, repoKey:legacyRepoKey(node), reason: 'parentName cycle' }); break; }
+      visited.add(key);
+      parent = nodes.find(n => idKeyOf(n) === key)?.parentName;
     }
   }
 
   // The final document must pass the v2 schema; if it does not, that is a bug.
+  for (const node of nodes) {
+    const direction = directions.find(d => d.id === nodeId.get(idKeyOf(node)));
+    if (!direction) continue;
+    const issues = unresolved.filter(i => i.legacyName === node.name && i.repoKey === legacyRepoKey(node));
+    direction.recoveryReasons = issues.map(i => i.reason);
+    if (node.parentName && issues.length === 0) {
+      const parentId = directionIdByNameRepo.get(`${legacyRepoKey(node)}\u0000${node.parentName}`);
+      const parent = directions.find(d => d.id === parentId);
+      if (parent) direction.integrationTargetWorktreeId = parent.worktreeId;
+    }
+  }
   validateStateV2(state);
 
   return {

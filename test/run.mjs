@@ -4,33 +4,21 @@
 // cannot hide the others), prints a combined result, and cleans the scratch
 // directory the suites create under test/.tmp.
 import { spawnSync } from 'node:child_process'
-import { rmSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const TMP = join(HERE, '.tmp')
-
-const SUITES = [
-  ['host tools — worktree/tree/status/merge/drop + guards', 'tools.mjs'],
-  ['seeded fork — inherited history + agent preset + boundary', 'seeded.mjs'],
-  ['client half — slots, buttons, dialogs, overview graph', 'client.mjs'],
-  ['manifest pre-flight — host validation rules', 'manifest.mjs'],
-]
-
-const cleanup = () => { rmSync(TMP, { recursive: true, force: true }) }
-cleanup()
-
-let failed = 0
-for (const [title, file] of SUITES) {
-  console.log(`\n================ ${title} ================`)
-  const result = spawnSync(process.execPath, [join(HERE, file)], { stdio: 'inherit' })
-  if (result.status !== 0) failed += 1
+const ROOT = dirname(HERE)
+for (const [name, args] of [
+  ['Compile tests', ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.test.json']],
+  ['Build production entries', ['scripts/build.mjs']],
+]) {
+  console.log(name)
+  const result = spawnSync(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
+  if (result.status !== 0) process.exit(result.status ?? 1)
 }
-
-cleanup()
-if (failed > 0) {
-  console.error(`\n${failed} suite(s) failed`)
-  process.exit(1)
-}
-console.log('\nall suites passed')
+const suites = ['domain', 'contract', 'operations'].flatMap(kind =>
+  readdirSync(join(ROOT, 'dist-test/test', kind)).filter(f => f.endsWith('.test.js')).map(f => join(ROOT, 'dist-test/test', kind, f)))
+const result = spawnSync(process.execPath, ['--test', ...suites, join(HERE, 'runtime.mjs'),join(HERE,'browser-contract.mjs')], { cwd: ROOT, stdio: 'inherit' })
+process.exit(result.status ?? 1)

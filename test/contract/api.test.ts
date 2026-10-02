@@ -47,7 +47,7 @@ test('parseForkRequest accepts optional messageId and boundarySeq', () => {
 test('ok() wraps a payload in the versioned envelope', () => {
   const env = ok({ name: 'x' }, 7);
   assert.deepEqual(env, {
-    protocolVersion: PROTOCOL_VERSION, schemaVersion: SCHEMA_VERSION, buildId: 'dev',
+    protocolVersion: PROTOCOL_VERSION, schemaVersion: SCHEMA_VERSION, buildId: '0.3.0',
     revision: 7, ok: true, data: { name: 'x' },
   });
 });

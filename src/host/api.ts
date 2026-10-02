@@ -3,11 +3,11 @@
 // shared schema; GET threw without a uniform response).
 import type { ForkRequest } from './operations.js';
 
-export const PROTOCOL_VERSION = 1;
-export const SCHEMA_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+export const SCHEMA_VERSION = 2;
 // buildId is stamped at release time; a stable placeholder until T7 wires the
 // real release id through the build.
-export const BUILD_ID = 'dev';
+export const BUILD_ID = '0.3.0';
 
 export type ApiEnvelope<T = unknown> = {
   protocolVersion: number;
@@ -63,15 +63,21 @@ export function parseForkRequest(body: unknown): ForkRequest {
   const sourceSessionId = requireString(body.sourceSessionId, 'sourceSessionId');
   const sourceCwd = requireString(body.sourceCwd, 'sourceCwd');
   const displayName = requireString(body.displayName, 'displayName');
+  if (displayName.length > 120 || /[\u0000-\u001f]/.test(displayName)) throw new ApiValidationError('invalid-argument', 'displayName exceeds 120 characters or contains control characters');
+  if (body.brief !== undefined && typeof body.brief !== 'string') throw new ApiValidationError('invalid-argument', 'brief must be a string');
   const brief = typeof body.brief === 'string' ? body.brief : '';
+  if (brief.length > 8000) throw new ApiValidationError('invalid-argument', 'brief exceeds 8000 characters');
   const messageId = optionalString(body.messageId, 'messageId');
   const boundarySeq = typeof body.boundarySeq === 'number' && Number.isSafeInteger(body.boundarySeq) ? body.boundarySeq : undefined;
+  if (body.boundarySeq !== undefined && (boundarySeq === undefined || boundarySeq < 0)) throw new ApiValidationError('invalid-argument', 'boundarySeq must be a non-negative safe integer');
+  if (body.history !== undefined && body.history !== 'blank' && body.history !== 'inherit') throw new ApiValidationError('invalid-argument', 'history must be inherit or blank');
   const history = body.history === 'blank' ? 'blank' : 'inherit';
 
   const codeSourceRaw = body.codeSource;
   if (!isRecord(codeSourceRaw)) throw new ApiValidationError('invalid-argument', 'codeSource must be an object');
   let codeSource: ForkRequest['codeSource'];
   if (codeSourceRaw.kind === 'source-head') {
+    if (codeSourceRaw.carryChanges !== undefined && typeof codeSourceRaw.carryChanges !== 'boolean') throw new ApiValidationError('invalid-argument', 'carryChanges must be boolean');
     codeSource = { kind: 'source-head', carryChanges: codeSourceRaw.carryChanges !== false };
   } else if (codeSourceRaw.kind === 'explicit-commit') {
     const oid = requireString(codeSourceRaw.oid, 'codeSource.oid');

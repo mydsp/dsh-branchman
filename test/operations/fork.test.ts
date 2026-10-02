@@ -102,15 +102,15 @@ test('same requestId with a different body throws a conflict', async () => {
   await assert.rejects(() => engine.fork(baseFork({ brief: 'different' })), IdempotencyConflictError);
 });
 
-test('a failure at create-session compensates the worktree and returns failed', async () => {
+test('a create-session exception retains the worktree until the host is reconciled', async () => {
   const rec = recorder({ failAt: 'create-session' });
   const engine = new OperationsEngine(rec.effects);
   const result = await engine.fork(baseFork());
-  assert.equal(result.state, 'failed');
+  assert.equal(result.state, 'recovery-required');
   assert.equal(result.code, 'agents.create failed');
   assert.equal(result.retryable, true);
   // the worktree/branch it created was rolled back
-  assert.equal(rec.removed.length, 1);
+  assert.equal(rec.removed.length, 0);
   assert.equal(rec.directionsPersisted.length, 0, 'no direction persisted on failure');
 });
 
@@ -130,7 +130,7 @@ test('explicit-commit base skips carry and uses the commit oid as base', async (
   assert.equal(rec.phases.includes('carry'), false);
 });
 
-test('recover re-runs a failed operation from its stored request', async () => {
+test('recover does not replay owned resources without a reconciler', async () => {
   const rec = recorder({ failAt: 'create-session' });
   const engine = new OperationsEngine(rec.effects);
   const failed = await engine.fork(baseFork());
@@ -138,7 +138,8 @@ test('recover re-runs a failed operation from its stored request', async () => {
   // now the effect succeeds
   rec.failAt = undefined;
   const recovered = await engine.recover(failed.operationId);
-  assert.equal(recovered.state, 'succeeded');
+  assert.equal(recovered.state, 'recovery-required');
+  assert.equal(recovered.code, 'resource-reconciliation-required');
   assert.equal(recovered.operationId, failed.operationId);
 });
 

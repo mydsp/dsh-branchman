@@ -1,1302 +1,1882 @@
-// dsh-branchman — tree-branching workspace plugin for DeepSeek Harness (DSH).
-//
-// One atom = "open a new engineering direction": a git worktree + a child
-// session bound to that worktree's cwd (inheriting the conversation it forks
-// from) + a tree edge. The conversation and the workspace fork in the same
-// move, and the tree renders itself.
-//
-// Zero runtime dependencies: node builtins plus the host's own bare
-// `@deepseek-ai/*` imports, which resolve inside the plugin context.
-//
-// Docs: README.md · docs/ARCHITECTURE.md · docs/PLUGIN-NOTES.md
-import { execFile } from 'node:child_process'
-import { copyFile, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { randomUUID } from 'node:crypto'
+// src/host/runtime.ts
+import { mkdir as mkdir4, readFile as readFile4, writeFile as writeFile2, access } from "node:fs/promises";
+import { dirname as dirname3, join as join3, resolve as resolve2 } from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
 
-// p2-fix: tools MUST be defined via the host's defineTool — it normalizes the
-// parameter schema for the model-facing tool list. Registering a raw object
-// produces a tool whose parameters the model never fills (all calls arrive
-// with empty arguments). Same contract dsh-deja uses.
-let defineTool = null
-try { ({ defineTool } = await import('@deepseek-ai/dsh-tools')) } catch {}
-
-// p5-fix: a direction's child conversation must INHERIT the conversation it
-// branches from, exactly like the native fork button does. The host's own fork
-// path builds that seed with this helper; without it the child session is born
-// empty and the whole "go back to that point and try another direction" idea
-// is lost. Absent peer degrades to an unseeded child rather than failing.
-let buildForkSeed = null
-try { ({ buildForkSeed } = await import('@deepseek-ai/dsh-session/fork')) } catch {}
-
-// Config schema. Declaring `Config` is what lets the host validate a row's
-// `config` and lets users tune the plugin from cordis.patch.yml. Guarded like
-// the peer imports above: a host that cannot resolve schemastery gets no schema,
-// and the plugin then reads the raw config exactly as it did before.
-let Schema = null
-try {
-  const mod = await import('schemastery')
-  const candidate = mod.default ?? mod
-  if (typeof candidate?.object === 'function') Schema = candidate
-} catch { /* no schema — config is read as-is */ }
-
-export const Config = Schema === null ? undefined : Schema.object({
-  dataFile: Schema.string().default(''),
-  defaultRoot: Schema.string().default(''),
-  gitPath: Schema.string().default('git'),
-})
-
-// branchman tools (registered inside apply; see the `inject` export at the end)
-
-const MAX_NAME = 60
-
-// Optional host services, resolved through ctx.inject once they exist.
-//
-// p8-fix: cordis serves services through a Proxy that THROWS
-// `cannot get property "x" without inject` on an undeclared access — it does
-// not return undefined. Reading `ctx.sessionQuery` directly is therefore a hard
-// failure, and the seeded-fork path silently degraded to an empty child (the
-// host log said exactly: "cannot get property sessionQuery without inject").
-// Declaring them in `inject` would be worse: a name that never resolves keeps
-// the whole plugin from activating, taking the tools and the UI down with it.
-const optional = { sessionQuery: null, agents: null, agentDefaultModel: null, workspaceRegistry: null }
-
-// ────────────────────────────── node preview ──────────────────────────────
-// A direction's row has to be recognizable WITHOUT opening anything: the
-// branch name repeats vocabulary ("test", "开源作品") and a cold goal session's
-// host title is always the same boilerplate ("Reference Attachments for Goal
-// Objective"), so neither identifies the conversation. The tree therefore
-// carries a one-line content preview per session — the `/goal` objective when
-// the session has one, else the first genuine human message. Computed once per
-// node through sessionQuery and cached in tree.json (session logs are
-// append-only, so "first" never goes stale). The shapes here mirror
-// dsh-session-title-smart's reader: `goal/change` carries `data.goal.objective`
-// (operation 'clear' drops it), a real human message is `user/message` with
-// `data.source.kind === 'user'` and text blocks, and the synthesized goal
-// message text matches the boilerplate below.
-const GOAL_BOILERPLATE_RE = /^\s*reference attachments for (?:the )?goal objective\.?\s*$/i
-const previewInflight = new Map()
-
-const flattenText = value => String(value ?? '').replace(/\s+/g, ' ').trim()
-
-function derivePreview(events) {
-  if (!Array.isArray(events)) return null
-  let objective = null
-  let firstHuman = null
-  for (const event of events) {
-    if (event?.type === 'goal/change') {
-      const data = event.data ?? {}
-      if (data.operation === 'clear') { objective = null; continue }
-      const text = flattenText(data.goal?.objective)
-      if (text !== '') objective = text
-      continue
-    }
-    if (firstHuman === null && event?.type === 'user/message') {
-      const data = event.data ?? {}
-      if (data?.source?.kind !== 'user') continue
-      const blocks = Array.isArray(data.content) ? data.content : []
-      const text = flattenText(blocks
-        .filter(block => block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string')
-        .map(block => block.text)
-        .join(' '))
-      if (text === '' || GOAL_BOILERPLATE_RE.test(text)) continue
-      firstHuman = text
-    }
-    if (objective !== null && firstHuman !== null) break
+// src/host/store.ts
+import { mkdir, readFile, open, rename, rm } from "node:fs/promises";
+import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+function emptyStateV2() {
+  return { version: 2, revision: 0, repositories: [], worktrees: [], sessions: [], directions: [], forkEdges: [] };
+}
+function newId() {
+  return randomUUID();
+}
+function deepFreeze(value) {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
   }
-  const text = objective ?? firstHuman
-  if (text === null || text === '') return null
-  return text.length > 80 ? `${text.slice(0, 79)}…` : text
+  return value;
 }
-
-async function ensurePreview(node) {
-  const key = node.name
-  const inflight = previewInflight.get(key)
-  if (inflight !== undefined) return inflight
-  const run = (async () => {
-    try {
-      if (typeof node.sessionId !== 'string' || node.sessionId === '') { node.preview = null; return }
-      const sessionQuery = optional.sessionQuery
-      if (sessionQuery === null) return // no capability: leave undefined, caller skips
-      const observed = await sessionQuery.observeSession(node.sessionId)
-      node.preview = derivePreview(observed?.events)
-    } catch {
-      // Archived-then-purged logs and unreadable sessions land here; record
-      // "tried, nothing" (null) so the next poll does not re-read the log.
-      node.preview = null
-    } finally {
-      previewInflight.delete(key)
+var StateSchemaError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StateSchemaError";
+  }
+};
+var RevisionConflictError = class extends Error {
+  constructor(expected, actual) {
+    super(`revision conflict: expected ${expected}, actual ${actual}`);
+    this.name = "RevisionConflictError";
+  }
+};
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isString = (value) => typeof value === "string";
+function requireString(value, field) {
+  if (!isString(value)) throw new StateSchemaError(`${field} must be a string`);
+  return value;
+}
+function optionalBoolean(value, field) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "boolean") throw new StateSchemaError(`${field} must be boolean`);
+  return value;
+}
+function optionalString(value, field) {
+  if (value === void 0 || value === null) return null;
+  return requireString(value, field);
+}
+function validateRepo(value, i) {
+  if (!isRecord(value)) throw new StateSchemaError(`repositories[${i}] must be an object`);
+  return {
+    id: requireString(value.id, `repositories[${i}].id`),
+    canonicalCommonDir: requireString(value.canonicalCommonDir, `repositories[${i}].canonicalCommonDir`),
+    primaryWorktreeId: requireString(value.primaryWorktreeId, `repositories[${i}].primaryWorktreeId`),
+    ...value.identityVerified === void 0 ? {} : { identityVerified: optionalBoolean(value.identityVerified, "identityVerified") }
+  };
+}
+function validateWorktree(value, i) {
+  if (!isRecord(value)) throw new StateSchemaError(`worktrees[${i}] must be an object`);
+  const managedBy = value.managedBy;
+  if (managedBy !== "branchman" && managedBy !== "external") {
+    throw new StateSchemaError(`worktrees[${i}].managedBy must be branchman|external`);
+  }
+  return {
+    id: requireString(value.id, `worktrees[${i}].id`),
+    repoId: requireString(value.repoId, `worktrees[${i}].repoId`),
+    canonicalPath: requireString(value.canonicalPath, `worktrees[${i}].canonicalPath`),
+    branchRef: optionalString(value.branchRef, `worktrees[${i}].branchRef`),
+    managedBy,
+    ...value.present === void 0 ? {} : { present: optionalBoolean(value.present, "present") }
+  };
+}
+function validateSession(value, i) {
+  if (!isRecord(value)) throw new StateSchemaError(`sessions[${i}] must be an object`);
+  const sessionPresence = value.presence;
+  if (sessionPresence !== "live" && sessionPresence !== "persisted" && sessionPresence !== "missing" && sessionPresence !== "unknown") {
+    throw new StateSchemaError(`sessions[${i}].presence must be live|persisted|missing|unknown`);
+  }
+  if (typeof value.archived !== "boolean") throw new StateSchemaError(`sessions[${i}].archived must be a boolean`);
+  return {
+    sessionId: requireString(value.sessionId, `sessions[${i}].sessionId`),
+    worktreeId: optionalString(value.worktreeId, `sessions[${i}].worktreeId`),
+    presence: sessionPresence,
+    archived: value.archived
+  };
+}
+function validateDirection(value, i) {
+  if (!isRecord(value)) throw new StateSchemaError(`directions[${i}] must be an object`);
+  const state = value.state;
+  if (!["creating", "ready", "conflicted", "recovery-required", "removed"].includes(state)) {
+    throw new StateSchemaError(`directions[${i}].state must be a known direction state`);
+  }
+  return {
+    id: requireString(value.id, `directions[${i}].id`),
+    repoId: requireString(value.repoId, `directions[${i}].repoId`),
+    worktreeId: requireString(value.worktreeId, `directions[${i}].worktreeId`),
+    displayName: requireString(value.displayName, `directions[${i}].displayName`),
+    primarySessionId: optionalString(value.primarySessionId, `directions[${i}].primarySessionId`),
+    baseOid: requireString(value.baseOid, `directions[${i}].baseOid`),
+    upstreamRef: optionalString(value.upstreamRef, `directions[${i}].upstreamRef`),
+    integrationTargetWorktreeId: requireString(value.integrationTargetWorktreeId, `directions[${i}].integrationTargetWorktreeId`),
+    state,
+    ...value.brief === void 0 ? {} : { brief: requireString(value.brief, "brief") },
+    ...value.summary === void 0 ? {} : { summary: requireString(value.summary, "summary") },
+    ...value.recoveryReasons === void 0 ? {} : { recoveryReasons: (() => {
+      if (!Array.isArray(value.recoveryReasons)) throw new StateSchemaError("recoveryReasons must be an array");
+      return value.recoveryReasons.map((v) => requireString(v, "recoveryReasons"));
+    })() },
+    ...value.workspaceId === void 0 ? {} : { workspaceId: optionalString(value.workspaceId, "workspaceId") },
+    ...value.createdAt === void 0 ? {} : { createdAt: requireString(value.createdAt, "createdAt") },
+    ...value.updatedAt === void 0 ? {} : { updatedAt: requireString(value.updatedAt, "updatedAt") },
+    ...value.mergedAt === void 0 ? {} : { mergedAt: optionalString(value.mergedAt, "mergedAt") }
+  };
+}
+function validateForkEdge(value, i) {
+  if (!isRecord(value)) throw new StateSchemaError(`forkEdges[${i}] must be an object`);
+  const boundarySeq = value.boundarySeq;
+  const inheritedEventCount = value.inheritedEventCount;
+  if (boundarySeq !== null && (!Number.isSafeInteger(boundarySeq) || boundarySeq < 0)) throw new StateSchemaError(`forkEdges[${i}].boundarySeq must be a non-negative integer or null`);
+  if (!Number.isSafeInteger(inheritedEventCount) || inheritedEventCount < 0) throw new StateSchemaError(`forkEdges[${i}].inheritedEventCount must be a non-negative integer`);
+  return {
+    id: requireString(value.id, `forkEdges[${i}].id`),
+    sourceSessionId: requireString(value.sourceSessionId, `forkEdges[${i}].sourceSessionId`),
+    targetSessionId: requireString(value.targetSessionId, `forkEdges[${i}].targetSessionId`),
+    boundarySeq,
+    boundaryMessageId: optionalString(value.boundaryMessageId, `forkEdges[${i}].boundaryMessageId`),
+    inheritedEventCount,
+    operationId: optionalString(value.operationId, `forkEdges[${i}].operationId`)
+  };
+}
+function validateStateV2(raw) {
+  if (!isRecord(raw)) throw new StateSchemaError("state must be an object");
+  if (raw.version !== 2) throw new StateSchemaError("state.version must be 2");
+  if (!Number.isInteger(raw.revision) || raw.revision < 0) {
+    throw new StateSchemaError("state.revision must be a non-negative integer");
+  }
+  const arr = (field) => {
+    const value = raw[field];
+    if (!Array.isArray(value)) throw new StateSchemaError(`state.${field} must be an array`);
+    return value;
+  };
+  const repositories = arr("repositories").map((v, i) => validateRepo(v, i));
+  const worktrees = arr("worktrees").map((v, i) => validateWorktree(v, i));
+  const sessions = arr("sessions").map((v, i) => validateSession(v, i));
+  const directions = arr("directions").map((v, i) => validateDirection(v, i));
+  const forkEdges = arr("forkEdges").map((v, i) => validateForkEdge(v, i));
+  const uniqueIds = /* @__PURE__ */ new Set();
+  for (const entity of [...repositories, ...worktrees, ...sessions, ...directions, ...forkEdges]) {
+    const id = "id" in entity ? entity.id : void 0;
+    if (id !== void 0) {
+      if (uniqueIds.has(id)) throw new StateSchemaError(`duplicate entity id "${id}"`);
+      uniqueIds.add(id);
     }
-  })()
-  previewInflight.set(key, run)
-  return run
+  }
+  const repos = new Map(repositories.map((r) => [r.id, r]));
+  const trees = new Map(worktrees.map((w) => [w.id, w]));
+  const sessionIds = /* @__PURE__ */ new Set();
+  for (const s of sessions) {
+    if (sessionIds.has(s.sessionId)) throw new StateSchemaError(`duplicate sessionId ${s.sessionId}`);
+    sessionIds.add(s.sessionId);
+    if (s.worktreeId !== null && !trees.has(s.worktreeId)) throw new StateSchemaError(`session ${s.sessionId} has no worktree`);
+  }
+  for (const r of repositories) if (trees.get(r.primaryWorktreeId)?.repoId !== r.id) throw new StateSchemaError(`repository ${r.id} has no primary worktree`);
+  for (const w of worktrees) if (!repos.has(w.repoId)) throw new StateSchemaError(`worktree ${w.id} has no repository`);
+  for (const d of directions) {
+    if (!repos.has(d.repoId) || trees.get(d.worktreeId)?.repoId !== d.repoId || trees.get(d.integrationTargetWorktreeId)?.repoId !== d.repoId) throw new StateSchemaError(`direction ${d.id} has unresolved repository/worktree references`);
+    if (d.primarySessionId !== null && !sessionIds.has(d.primarySessionId)) throw new StateSchemaError(`direction ${d.id} has no session`);
+  }
+  for (const edge of forkEdges) if (!sessionIds.has(edge.sourceSessionId) || !sessionIds.has(edge.targetSessionId)) throw new StateSchemaError(`fork edge ${edge.id} has unresolved sessions`);
+  return deepFreeze({
+    version: 2,
+    revision: raw.revision,
+    repositories,
+    worktrees,
+    sessions,
+    directions,
+    forkEdges
+  });
 }
-
-// ────────────────────────────── state ──────────────────────────────
-
-class TreeStore {
+var StateStore = class {
+  #dataFile;
+  #state = deepFreeze(emptyStateV2());
+  #writeSeq = 0;
+  #writeChain = Promise.resolve();
+  #commitChain = Promise.resolve();
+  #ready;
   constructor(dataFile) {
-    if (typeof dataFile !== 'string' || dataFile.length === 0) throw new Error('branchman: config.dataFile must be a non-empty path')
-    this.dataFile = dataFile
-    this.state = { version: 1, nodes: [] }
-    this.writeSeq = 0
-    this.writeChain = Promise.resolve()
-    this.ready = this.load()
+    if (typeof dataFile !== "string" || dataFile.length === 0) {
+      throw new Error("branchman: state.dataFile must be a non-empty path");
+    }
+    this.#dataFile = dataFile;
+    this.#ready = this.#load();
   }
-
-  async load() {
-    await mkdir(dirname(this.dataFile), { recursive: true })
+  async #load() {
+    await mkdir(dirname(this.#dataFile), { recursive: true });
     try {
-      const parsed = JSON.parse(await readFile(this.dataFile, 'utf8'))
-      if (parsed?.version === 1 && Array.isArray(parsed.nodes)) this.state = parsed
+      const parsed = JSON.parse(await readFile(this.#dataFile, "utf8"));
+      this.#state = validateStateV2(parsed);
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error
-      await this.save()
+      if (error.code !== "ENOENT") throw error;
+      await this.#persist(this.#state);
     }
   }
-
+  async ready() {
+    await this.#ready;
+  }
+  /** Current committed state (a frozen snapshot). */
+  read() {
+    return this.#state;
+  }
   /**
-   * Persist the tree.
-   *
-   * p6-fix: saves are now SERIALIZED and each one writes through a UNIQUE temp
-   * name. The previous version used the single path `tree.json.tmp` for every
-   * save, so two overlapping saves raced: the first `rename` consumed the temp
-   * file and the second died with
-   * `ENOENT: rename 'tree.json.tmp' -> 'tree.json'`. That is not theoretical —
-   * creating the child session fires the passive `session/created` projection,
-   * which saves the node while `doFork` is still saving its own, and the fork
-   * lost the race, rolled its worktree back and surfaced the ENOENT in the
-   * dialog.
+   * Commit `next` iff the current revision equals `expectedRevision`. Returns
+   * the new revision. On a revision mismatch it throws RevisionConflictError;
+   * on a failed write the old file AND old in-memory snapshot are preserved.
    */
-  async save() {
+  async commit(expectedRevision, next) {
+    await this.#ready;
+    const validated = validateStateV2(next);
+    const commit = async () => {
+      if (this.#state.revision !== expectedRevision) {
+        throw new RevisionConflictError(expectedRevision, this.#state.revision);
+      }
+      const committed = deepFreeze({ ...validated, revision: expectedRevision + 1 });
+      await this.#persist(committed);
+      this.#state = committed;
+      return committed.revision;
+    };
+    const queued = this.#commitChain.then(commit, commit);
+    this.#commitChain = queued.then(() => void 0, () => void 0);
+    return queued;
+  }
+  async #persist(state) {
     const write = async () => {
-      await mkdir(dirname(this.dataFile), { recursive: true })
-      const seq = (this.writeSeq += 1)
-      const tmp = `${this.dataFile}.${process.pid}.${seq}.tmp`
+      await mkdir(dirname(this.#dataFile), { recursive: true });
+      const seq = this.#writeSeq += 1;
+      const tmp = `${this.#dataFile}.${process.pid}.${seq}.tmp`;
       try {
-        await writeFile(tmp, JSON.stringify(this.state, null, 2), 'utf8')
-        await rename(tmp, this.dataFile)
+        const handle = await open(tmp, "wx");
+        try {
+          await handle.writeFile(JSON.stringify(state, null, 2), "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await rename(tmp, this.#dataFile);
       } catch (error) {
-        try { await rm(tmp, { force: true }) } catch { /* the temp may already be gone */ }
-        throw error
+        try {
+          await rm(tmp, { force: true });
+        } catch {
+        }
+        throw error;
       }
+    };
+    const queued = this.#writeChain.then(write, write);
+    this.#writeChain = queued.then(() => void 0, () => void 0);
+    await queued;
+  }
+};
+
+// src/host/migrate-v1.ts
+import { createHash } from "node:crypto";
+
+// src/domain/paths.ts
+var SEP = /[\\/]+/g;
+function normalizeWindowsPath(input) {
+  const s = String(input ?? "");
+  const trimmed = s.replace(SEP, "/").replace(/\/+$/, "");
+  return trimmed.toLowerCase();
+}
+function isInside(root, candidate) {
+  const r = normalizeWindowsPath(root);
+  const c = normalizeWindowsPath(candidate);
+  if (r === "" || c === "") return false;
+  if (c === r) return true;
+  return c.startsWith(`${r}/`);
+}
+function samePath(a, b) {
+  return normalizeWindowsPath(a) === normalizeWindowsPath(b);
+}
+
+// src/host/migrate-v1.ts
+var MigrationError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "MigrationError";
+  }
+};
+var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function legacyRepoKey(node) {
+  const explicit = String(node.root ?? "").replace(/[\\/]+$/, "");
+  if (explicit !== "") return normalizeWindowsPath(explicit);
+  const cwd = String(node.cwd ?? "");
+  const at = cwd.search(/[\\/]\.branches(?:[\\/]|$)/);
+  const root = at > 0 ? cwd.slice(0, at) : cwd;
+  const key = normalizeWindowsPath(root);
+  return key === "" ? null : key;
+}
+function migrateV1(raw) {
+  if (!isRecord2(raw)) throw new MigrationError("v1 tree must be an object");
+  if (raw.version !== 1) throw new MigrationError(`unsupported tree version: ${String(raw.version)}`);
+  if (!Array.isArray(raw.nodes)) throw new MigrationError("v1 tree.nodes must be an array");
+  const nodes = raw.nodes.map((value, i) => {
+    if (!isRecord2(value)) throw new MigrationError(`v1 tree.nodes[${i}] must be an object`);
+    const name = String(value.name ?? "").trim();
+    if (name === "") throw new MigrationError(`v1 tree.nodes[${i}].name must be non-empty`);
+    return {
+      name,
+      parentName: typeof value.parentName === "string" ? value.parentName : null,
+      root: typeof value.root === "string" ? value.root : null,
+      cwd: typeof value.cwd === "string" ? value.cwd : null,
+      branch: typeof value.branch === "string" ? value.branch : null,
+      parentSessionId: typeof value.parentSessionId === "string" ? value.parentSessionId : null,
+      sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
+      status: typeof value.status === "string" ? value.status : null,
+      droppedAt: typeof value.droppedAt === "string" ? value.droppedAt : null,
+      mergedAt: typeof value.mergedAt === "string" ? value.mergedAt : null,
+      brief: typeof value.brief === "string" ? value.brief : "",
+      inheritedEvents: Number.isSafeInteger(value.inheritedEvents) && value.inheritedEvents >= 0 ? value.inheritedEvents : 0,
+      preview: typeof value.preview === "string" ? value.preview : "",
+      workspaceId: typeof value.workspaceId === "string" ? value.workspaceId : void 0,
+      createdAt: typeof value.createdAt === "string" ? value.createdAt : void 0,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : void 0
+    };
+  });
+  const sourceHash = createHash("sha256").update(JSON.stringify(raw)).digest("hex");
+  const unresolved = [];
+  const primaryTrees = [];
+  const repoByKey = /* @__PURE__ */ new Map();
+  const repoIdOf = (key) => {
+    let repo = repoByKey.get(key);
+    if (repo === void 0) {
+      repo = { id: newId(), canonicalCommonDir: key, primaryWorktreeId: newId(), identityVerified: false };
+      repoByKey.set(key, repo);
+      primaryTrees.push({ id: repo.primaryWorktreeId, repoId: repo.id, canonicalPath: key, branchRef: null, managedBy: "external" });
     }
-    // Chain on both outcomes: one failed save must not wedge every later one.
-    const queued = this.writeChain.then(write, write)
-    this.writeChain = queued.then(() => undefined, () => undefined)
-    return queued
+    return repo.id;
+  };
+  const directions = [];
+  const sessions = [];
+  const forkEdges = [];
+  const worktrees = [];
+  const nodeId = /* @__PURE__ */ new Map();
+  const idKeyOf = (node) => {
+    const repoKey = legacyRepoKey(node) ?? "(no-repo)";
+    return `${repoKey}\0${node.name}`;
+  };
+  for (const node of nodes) {
+    if (!nodeId.has(idKeyOf(node))) nodeId.set(idKeyOf(node), newId());
   }
-
-  async mutate(action) {
-    await this.ready
-    const result = action()
-    await this.save()
-    return result
+  for (const node of nodes) {
+    const repoKey = legacyRepoKey(node);
+    if (repoKey === null) {
+      unresolved.push({ legacyName: node.name, repoKey, reason: "no root/cwd to derive a repository" });
+      continue;
+    }
+    const repoId = repoIdOf(repoKey);
+    const isDropped = node.status === "dropped" || node.droppedAt != null;
+    const worktreeId = newId();
+    const primarySessionId = typeof node.sessionId === "string" && node.sessionId !== "" ? node.sessionId : null;
+    const directionId = nodeId.get(idKeyOf(node)) ?? newId();
+    {
+      worktrees.push({
+        id: worktreeId,
+        repoId,
+        canonicalPath: normalizeWindowsPath(String(node.cwd ?? node.root ?? "")),
+        branchRef: typeof node.branch === "string" ? node.branch : null,
+        managedBy: "branchman",
+        present: !isDropped
+      });
+    }
+    directions.push({
+      id: directionId,
+      repoId,
+      worktreeId,
+      displayName: node.name,
+      primarySessionId,
+      // baseOid is unknown from v1 (the old file never stored it); the
+      // direction is created in a recovery state until operations re-resolve it.
+      baseOid: "",
+      upstreamRef: null,
+      integrationTargetWorktreeId: repoByKey.get(repoKey)?.primaryWorktreeId ?? "",
+      state: isDropped ? "removed" : "recovery-required",
+      brief: node.brief ?? "",
+      summary: node.preview ?? "",
+      ...node.workspaceId ? { workspaceId: node.workspaceId } : {},
+      ...node.createdAt ? { createdAt: node.createdAt } : {},
+      ...node.updatedAt ? { updatedAt: node.updatedAt } : {},
+      mergedAt: node.mergedAt ?? null
+    });
+    if (primarySessionId !== null) {
+      sessions.push({
+        sessionId: primarySessionId,
+        worktreeId,
+        presence: "unknown",
+        archived: false
+      });
+    }
   }
+  for (const node of nodes) {
+    if (node.parentSessionId != null && node.parentSessionId !== "" && node.sessionId != null && node.sessionId !== "") {
+      if (!sessions.some((s) => s.sessionId === node.parentSessionId)) sessions.push({ sessionId: node.parentSessionId, worktreeId: null, presence: "unknown", archived: false });
+      if (!sessions.some((s) => s.sessionId === node.sessionId)) continue;
+      forkEdges.push({
+        id: newId(),
+        sourceSessionId: node.parentSessionId,
+        targetSessionId: node.sessionId,
+        boundarySeq: null,
+        boundaryMessageId: null,
+        inheritedEventCount: node.inheritedEvents ?? 0,
+        operationId: null
+      });
+    }
+  }
+  const state = {
+    version: 2,
+    revision: 0,
+    repositories: [...repoByKey.values()].map((r) => ({ ...r })),
+    worktrees: [...primaryTrees, ...worktrees],
+    sessions,
+    directions,
+    forkEdges
+  };
+  const directionIdByNameRepo = /* @__PURE__ */ new Map();
+  for (const node of nodes) {
+    const dirId = nodeId.get(idKeyOf(node));
+    if (dirId !== void 0) directionIdByNameRepo.set(idKeyOf(node), dirId);
+  }
+  for (const node of nodes) {
+    if (node.parentName == null || node.parentName === "") continue;
+    const parentKey = `${legacyRepoKey(node) ?? "(no-repo)"}\0${node.parentName}`;
+    const target = directionIdByNameRepo.get(parentKey);
+    if (target === void 0 || target === "") {
+      unresolved.push({ legacyName: node.name, repoKey: legacyRepoKey(node), reason: `parentName "${node.parentName}" not found in its repo` });
+    }
+    const visited = /* @__PURE__ */ new Set([idKeyOf(node)]);
+    let parent = node.parentName;
+    while (parent) {
+      const key = `${legacyRepoKey(node) ?? "(no-repo)"}\0${parent}`;
+      if (visited.has(key)) {
+        unresolved.push({ legacyName: node.name, repoKey: legacyRepoKey(node), reason: "parentName cycle" });
+        break;
+      }
+      visited.add(key);
+      parent = nodes.find((n) => idKeyOf(n) === key)?.parentName;
+    }
+  }
+  for (const node of nodes) {
+    const direction = directions.find((d) => d.id === nodeId.get(idKeyOf(node)));
+    if (!direction) continue;
+    const issues = unresolved.filter((i) => i.legacyName === node.name && i.repoKey === legacyRepoKey(node));
+    direction.recoveryReasons = issues.map((i) => i.reason);
+    if (node.parentName && issues.length === 0) {
+      const parentId = directionIdByNameRepo.get(`${legacyRepoKey(node)}\0${node.parentName}`);
+      const parent = directions.find((d) => d.id === parentId);
+      if (parent) direction.integrationTargetWorktreeId = parent.worktreeId;
+    }
+  }
+  validateStateV2(state);
+  return {
+    sourceHash,
+    inputNodeCount: nodes.length,
+    outputDirectionCount: directions.length,
+    unresolved,
+    state
+  };
+}
 
+// src/host/git-adapter.ts
+import { execFile } from "node:child_process";
+var GitError = class extends Error {
+  kind;
+  code;
+  stderr;
+  constructor(kind, message, code = null, stderr = "") {
+    super(message);
+    this.name = "GitError";
+    this.kind = kind;
+    this.code = code;
+    this.stderr = stderr;
+  }
+};
+function execGitRunner(gitPath) {
+  return {
+    run(args, options) {
+      const opts = options ?? { cwd: process.cwd() };
+      return new Promise((resolve3, reject) => {
+        execFile(
+          gitPath,
+          args,
+          {
+            cwd: opts.cwd,
+            windowsHide: true,
+            maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024,
+            timeout: opts.timeoutMs ?? 15e3,
+            signal: opts.signal
+          },
+          (error, stdout, stderr) => {
+            if (error === null) {
+              resolve3({ stdout: String(stdout), stderr: String(stderr) });
+              return;
+            }
+            const code = typeof error.code === "number" ? error.code : null;
+            const rawStderr = String(stderr ?? "");
+            const rawMessage = String(error.message ?? "");
+            let kind = "io";
+            if (error.killed === true) kind = "timeout";
+            else if (opts.signal?.aborted === true) kind = "cancelled";
+            else if (code === 128) kind = "not-repo";
+            else kind = "io";
+            reject(new GitError(kind, rawMessage.slice(0, 300), code, rawStderr.slice(0, 2e3)));
+          }
+        );
+      });
+    }
+  };
+}
+var GitAdapter = class {
+  #runner;
+  #cwd;
+  constructor(runner, cwd) {
+    this.#runner = runner;
+    this.#cwd = cwd;
+  }
   /**
-   * Insert or merge one direction node, keyed by name. Defined fields in
-   * `patch` win; undefined fields keep their stored value. Returns the node.
+   * Resolve the git identity of the repository containing `cwd`.
    *
-   * p3-fix: this method was missing entirely — every doFork call died at the
-   * write step with "store.upsert is not a function", after the worktree had
-   * already been created (leaving an orphan directory behind).
+   * - worktree top level comes from `rev-parse --show-toplevel`;
+   * - common dir comes from `rev-parse --path-format=absolute --git-common-dir`
+   *   (absolute even inside a linked worktree, where `.git` is a file);
+   * - HEAD oid from `rev-parse HEAD`;
+   * - branch ref from `symbolic-ref --quiet --short HEAD`, null when detached.
    */
-  upsert(patch) {
-    if (patch === null || typeof patch !== 'object') throw new Error('branchman: upsert needs an object')
-    const name = String(patch.name ?? '').trim()
-    if (name === '') throw new Error('branchman: upsert needs a non-empty name')
-    const now = new Date().toISOString()
-    let node = this.state.nodes.find(item => item.name === name)
-    if (node === undefined) {
-      node = {
-        name, parentName: null, root: null, cwd: null, branch: null,
-        parentSessionId: null, sessionId: null, sessionTitle: null,
-        status: 'open', messageCount: 0, createdAt: now, lastActivityAt: now,
-      }
-      this.state.nodes.push(node)
-    }
-    for (const [key, value] of Object.entries(patch)) {
-      if (value === undefined || key === 'name') continue
-      node[key] = value
-    }
-    node.updatedAt = now
-    return node
+  async identify() {
+    const worktreePath = await this.#text(["rev-parse", "--show-toplevel"]);
+    const commonDir = await this.#text(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const headOid = await this.#text(["rev-parse", "HEAD"]);
+    const branchRef = await this.#optionalText(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    return {
+      commonDir: normalizeWindowsPath(commonDir),
+      worktreePath: normalizeWindowsPath(worktreePath),
+      headOid,
+      branchRef
+    };
   }
-}
-
-// ─────────────────────────── git plumbing ────────────────────────────
-
-function git(gitPath, cwd, args) {
-  return new Promise((resolvePromise, reject) => {
-    execFile(gitPath, args, { cwd, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`git ${args[0]} failed: ${(stderr || error.message).slice(0, 300)}`))
-      else resolvePromise(String(stdout))
-    })
-  })
-}
-
-/**
- * Assert that `dir` is inside a git repository and return that repository's top
- * level. Checking for a literal `.git` child would reject a subdirectory, while
- * git itself resolves the repository from any depth — and callers (the UI sends
- * the session's cwd, which may be nested) rely on that.
- *
- * @param dir - directory to probe.
- * @returns absolute path of the repository root.
- */
-async function assertRepo(gitPath, dir) {
-  if (!existsSync(dir)) throw new Error(`目录不存在: ${dir}`)
-  try {
-    const top = (await git(gitPath, dir, ['rev-parse', '--show-toplevel'])).trim()
-    if (top === '') throw new Error('empty toplevel')
-    return resolve(top)
-  } catch {
-    throw new Error(`${dir} 不是 git 仓。先 git init + 首次提交。`)
+  async #text(args) {
+    const { stdout } = await this.#runner.run(args, { cwd: this.#cwd });
+    const value = stdout.trim();
+    if (value === "") throw new GitError("unknown", `git ${args[0]} produced no output`, null, "");
+    return value;
   }
-}
-
-async function assertCleanRepo(gitPath, root) {
-  const status = await git(gitPath, root, ['status', '--porcelain'])
-  if (status.trim() !== '') throw new Error(`主线有未提交改动（${status.trim().split('\n').length} 项）。先提交或 stash，再开走向。`)
-}
-
-/**
- * Keep the direction directory out of the main repo's status.
- *
- * A linked worktree living under `.branches/` shows up as an untracked
- * directory in the parent repo, so every later cleanliness check (and the
- * merge guard) sees a dirty root. Adding `.branches/` to the repo's LOCAL
- * exclude file fixes that without touching any tracked file — the user does
- * not have to edit .gitignore, and nothing enters their history.
- */
-async function ensureBranchesIgnored(root) {
-  const excludeFile = join(root, '.git', 'info', 'exclude')
-  try {
-    await mkdir(dirname(excludeFile), { recursive: true })
-    let current = ''
-    try { current = await readFile(excludeFile, 'utf8') } catch { /* absent is fine */ }
-    if (current.split(/\r?\n/).some(line => line.trim() === '.branches/')) return
-    const next = `${current}${current !== '' && !current.endsWith('\n') ? '\n' : ''}# branchman direction worktrees\n.branches/\n`
-    await writeFile(excludeFile, next, 'utf8')
-  } catch {
-    // A bare or unusual repo layout must not break forking; the guard below
-    // simply keeps reporting honestly if the directory stays visible.
-  }
-}
-
-// ─────────────────────────── core actions ────────────────────────────
-
-/**
- * Create a direction's child conversation: bound to the worktree, carrying the
- * source conversation's history.
- *
- * Mirrors the host's own fork path (observe source → inclusive boundary →
- * buildForkSeed → compose agent → create with cwd). The bare `sessions.create`
- * call alone produces an EMPTY child — no inherited conversation and no agent
- * composition — which would make "go back to that point and try another
- * direction" meaningless. Degrades to that bare form only if the richer
- * services are unavailable, and says which one it used.
- */
-/**
- * Mirror of the Session Controller's private `latestCompletedPrefixBoundary`:
- * the last `turn/end`, plus the trailing events that belong to that same turn,
- * stopping before a new turn (or an appended user message, or an inbox splice)
- * starts. Forking from the raw last event instead would inherit a
- * half-finished turn — buildForkSeed would have to close it with synthetic
- * "forked" results.
- */
-function latestCompletedPrefixBoundary(events) {
-  const lastTurnEnd = events.findLast(event => event.type === 'turn/end')
-  if (lastTurnEnd === undefined) return undefined
-  let boundary = lastTurnEnd.seq
-  for (const next of events.slice(boundary + 1)) {
-    if (next.type === 'turn/start' || (next.type === 'user/message' && next.surfaceOp === 'append') || next.type === 'agent/inbox/spliced') break
-    boundary = next.seq
-  }
-  return boundary
-}
-
-/**
- * Fork from the point the clicked control sits under, not from the tail of the
- * conversation.
- *
- * The per-message branch control is rendered at a turn tail with the turn's
- * final assistant `messageId` (`dsh-client-ui-chat` passes
- * `closing.finalNode.messageId`), so the message id is the only handle the
- * browser half has on "that section of the conversation". Resolving it here
- * keeps the resolution rule next to the boundary rule it feeds.
- *
- * The event carrying the id is followed to the `turn/end` that closes its turn,
- * then the same trailing absorption as {@link latestCompletedPrefixBoundary} —
- * so the inherited prefix is always a set of finished turns, never a half-run
- * one. Undefined means "no such message, or its turn never finished"; the
- * caller then falls back to the latest completed turn.
- */
-function resolveMessageBoundary(events, messageId) {
-  if (typeof messageId !== 'string' || messageId === '') return undefined
-  const index = events.findIndex(event => event?.data?.message?.id === messageId || event?.data?.id === messageId)
-  if (index < 0) return undefined
-  const endIndex = events.findIndex((event, at) => at >= index && event.type === 'turn/end')
-  if (endIndex < 0) return undefined
-  let boundary = events[endIndex].seq
-  for (const next of events.slice(endIndex + 1)) {
-    if (next.type === 'turn/start' || (next.type === 'user/message' && next.surfaceOp === 'append') || next.type === 'agent/inbox/spliced') break
-    boundary = next.seq
-  }
-  return boundary
-}
-
-async function createChildSession(ctx, { worktree, sourceSessionId, boundarySeq, messageId }) {
-  const childId = `session-${randomUUID()}`
-  const hasSource = typeof sourceSessionId === 'string' && sourceSessionId !== ''
-  const { sessionQuery, agents, agentDefaultModel } = optional
-  if (hasSource && buildForkSeed !== null && sessionQuery !== null && agents !== null) {
+  async #optionalText(args) {
     try {
-      const observed = await sessionQuery.observeSession(sourceSessionId)
-      const events = observed?.events
-      if (Array.isArray(events) && events.length > 0) {
-        const explicit = Number.isSafeInteger(boundarySeq) && events[boundarySeq]?.seq === boundarySeq ? boundarySeq : undefined
-        const requested = explicit ?? resolveMessageBoundary(events, messageId)
-        const boundary = requested ?? latestCompletedPrefixBoundary(events)
-        if (Number.isSafeInteger(boundary) && events[boundary]?.seq === boundary) {
-          const seed = buildForkSeed(events, boundary)
-          // p9-fix: the controller's own fork path uses two PRIVATE helpers
-          // (`ApiSessionAgentController.presetForObservation` / `.composeAgent`)
-          // that do not exist on the `agents` service — calling them there
-          // produced "agents.presetForObservation is not a function" and
-          // silently produced an empty child. Their bodies are thin, so they are
-          // mirrored here:
-          //   presetForObservation(obs) -> obs.projections.values.agentPreset
-          //   composeAgent(presetId)    -> ctx.get('agentPresets').resolve/mount
-          const presetId = observed.projections?.values?.agentPreset
-          let agentPreset
-          let setup
-          const presets = typeof ctx.get === 'function' ? ctx.get('agentPresets') : undefined
-          if (presets !== undefined && presetId !== undefined) {
-            try {
-              agentPreset = (await presets.resolve(presetId)).id
-              setup = async (agentCtx) => { await presets.mount(agentCtx, agentPreset) }
-            } catch (error) {
-              ctx.logger?.warn?.(`branchman: preset compose failed (${error.message}); child keeps the default preset`)
-              agentPreset = undefined
-              setup = undefined
-            }
-          }
-          const selection = agentDefaultModel?.currentSelection?.() ?? {}
-          await agents.create({
-            sessionId: childId,
-            seed,
-            inheritedEventCount: boundary + 1,
-            meta: {
-              cwd: worktree,
-              parentSession: sourceSessionId,
-              isSeeded: true,
-              ...(agentPreset === undefined ? {} : { agentPreset }),
-            },
-            ...(selection.provider === undefined || selection.model === undefined
-              ? {}
-              : { agentOptions: { provider: selection.provider, model: selection.model } }),
-            ...(setup === undefined ? {} : { setup }),
-          })
-          try { observed[Symbol.dispose]?.() } catch { /* observation release is best-effort */ }
-          return {
-            sessionId: childId, seeded: true, inherited: boundary + 1, preset: agentPreset ?? null,
-            // Which rule chose the cut: an explicit seq (tree/API), the clicked
-            // message, or the latest finished turn. Reported so "why did this
-            // child inherit this much" is answerable without a debugger.
-            boundarySource: explicit !== undefined ? 'atSeq' : (requested === undefined ? 'latest-turn' : 'message'),
-            boundary,
-          }
-        }
-        // 宿主自己的 fork 在这种情况下是直接拒绝的（"has no completed turn to
-        // fork from"）。这里选择降级而不是报错：走向仍然建好，只是子会话从空
-        // 开始——用户点的那条消息还没形成完整回合时，这是唯一不挡路的行为。
-        ctx.logger?.warn?.('branchman: no completed turn to fork from — child is created without inherited history')
-      }
+      const { stdout } = await this.#runner.run(args, { cwd: this.#cwd });
+      const value = stdout.trim();
+      return value === "" ? null : value;
     } catch (error) {
-      ctx.logger?.warn?.(`branchman: seeded child failed (${error.message}); falling back to an unseeded session`)
+      if (error instanceof GitError && error.code === 1) return null;
+      throw error;
     }
-  } else if (hasSource) {
-    ctx.logger?.warn?.('branchman: sessionQuery/agents unavailable — child is created without inherited history')
   }
-  const created = ctx.sessions.create
-    ? ctx.sessions.create(childId, { meta: { cwd: worktree, ...(hasSource ? { parentSession: sourceSessionId } : {}) } })
-    : null
-  const id = created?.id ?? created?.sessionId ?? null
-  return { sessionId: id, seeded: false, inherited: 0, boundarySource: 'none', boundary: null }
-}
+};
 
-/**
- * Account the direction's child session in a Workspace of its own.
- *
- * A Workspace accounts a session by **exact canonical-cwd equality**
- * (`@deepseek-ai/dsh-workspace`: `sessionPath(id) === record.path`, and
- * `attachSession` rejects a cwd that "resolves to" anything else). A direction's
- * child has its own cwd — the worktree — so it belongs to no workspace and the
- * sidebar files it under 未分组, i.e. "no workspace". The Session Controller's
- * own fork hits the same rule from the other side: it resolves the SOURCE's
- * workspace and calls `workspace.attachSession(childId)` right after
- * `agents.create` (the native child keeps the source cwd, so that attach
- * validates). Here the workspace must be created first, at the worktree path.
- *
- * Registering it also nests the direction under the project in the "按工作区树"
- * view, because that view nests by registered path prefix.
- *
- * Never fatal: a host without the registry still gets a working direction, and
- * the returned `warning` is reported to the caller instead of being swallowed.
- *
- * @returns `{ workspaceId, warning }` — both optional.
- */
-async function attachDirectionWorkspace(ctx, { worktree, name, childSessionId }) {
-  const registry = optional.workspaceRegistry
-  if (registry === null || registry === undefined || typeof registry.create !== 'function') {
-    return { warning: '宿主未提供 workspaceRegistry：走向会落在「未分组」而不是自己的工作区' }
+// src/host/host-adapter.ts
+var HostAdapter = class {
+  #services;
+  #disposed = false;
+  #generation = 0;
+  constructor(services = {}) {
+    this.#services = { ...services };
   }
-  let workspace
-  try {
-    workspace = await registry.create(worktree, `走向 ${name}`)
-  } catch (error) {
-    return { warning: `工作区登记失败（走向仍可用）：${error.message}` }
+  /** Replace a service binding; returns a disposer that only clears ITS binding. */
+  bind(key, value) {
+    this.#assertActive();
+    this.#generation++;
+    this.#services[key] = value;
+    const current = value;
+    return () => {
+      if (this.#services[key] === current) {
+        this.#services[key] = null;
+        this.#generation++;
+      }
+    };
   }
-  const workspaceId = workspace?.id === undefined || workspace?.id === null ? undefined : String(workspace.id)
-  if (typeof childSessionId !== 'string' || childSessionId === '') return { workspaceId }
-  try {
-    // The entity method is the one the Session Controller uses; the registry
-    // method is the defensive alternative for a shape that moves it.
-    if (typeof workspace?.attachSession === 'function') await workspace.attachSession(childSessionId)
-    else if (typeof registry.attachSession === 'function') await registry.attachSession(childSessionId)
-    else return { workspaceId, warning: '工作区已登记，但宿主没有 attachSession：会话要等下次启动才会归组' }
-  } catch (error) {
-    return { workspaceId, warning: `会话未挂进工作区（走向仍可用）：${error.message}` }
+  capabilities() {
+    return {
+      inheritedFork: this.#services.sessionQuery != null && this.#services.agents != null,
+      sessionQuery: this.#services.sessionQuery != null,
+      workspaceRegistration: this.#services.workspaceRegistry != null
+    };
   }
-  return { workspaceId }
-}
-
-async function doFork(ctx, store, config, args) {
-  const name = String(args?.name ?? '').trim()
-  if (!name || name.length > MAX_NAME) throw new Error(`走向名必填且 ≤ ${MAX_NAME} 字符`)
-  if (!/^[^\\/:*?"<>|]+$/.test(name)) throw new Error('走向名不能包含 \\ / : * ? " < > |')
-  // Root resolution: explicit `root` (the agent tool) → the source session's cwd
-  // (the UI sends only `sourceCwd`) → config.defaultRoot. The middle step
-  // matters for a fresh install: with no configured defaultRoot the last
-  // fallback would be the host process's cwd, which is not the user's repository.
-  const requested = resolve(String(args?.root ?? args?.sourceCwd ?? config.defaultRoot))
-  const gitPath = config.gitPath
-  // Normalises to the repository top level: the session cwd may be a
-  // subdirectory, and worktrees must be created at the repo root.
-  const root = await assertRepo(gitPath, requested)
-  // 随手开是常态，不该被"先提交或 stash"挡住。主线的未提交改动随分叉原样带进
-  // 新 worktree：已跟踪文件的改动走 `git diff HEAD --binary` → worktree 内
-  // `git apply`（worktree 从同一 HEAD 建出，必然干净套用）；未跟踪的新文件
-  // （git diff 看不见它们，而它们恰恰是进行中工作的常态）逐个复制过去。
-  // 主线自己一字不动——复制不是移动。merge/sync 的脏守卫不受影响：那两处
-  // 拦的是"把无关改动混进主线"，方向相反。
-  const mainDiff = (await git(gitPath, root, ['diff', 'HEAD', '--binary'])).trim()
-  await ensureBranchesIgnored(root)
-  // 必须在 ensureBranchesIgnored 之后列未跟踪文件：.branches/ 进了本地排除，
-  // 别的走向 worktree 才不会出现在这份清单里。-z 保证 CJK 文件名不被转义。
-  const untracked = (await git(gitPath, root, ['ls-files', '--others', '--exclude-standard', '-z']))
-    .split('\0')
-    .map(entry => entry.trim())
-    .filter(Boolean)
-
-  const branch = `branchman/${name}`
-  const worktree = join(root, '.branches', name)
-  if (existsSync(worktree)) throw new Error(`走向目录已存在: ${worktree}`)
-
-  await git(gitPath, root, ['worktree', 'add', '-b', branch, worktree, args?.from ?? 'main'])
-
-  // 把主线的未提交改动带进新 worktree。补丁走 .git 目录下的临时文件（git 助手
-  // 不接 stdin）；未跟踪文件逐个复制，单个失败跳过不碍事。整体失败不回滚
-  // fork——worktree 本身可用，只是没带上改动，原因照实报给用户。
-  let carryNote = ''
-  const carriedParts = []
-  const carryFailed = []
-  if (mainDiff !== '') {
-    const patchFile = join(root, '.git', `branchman-carry-${process.pid}-${Date.now()}.patch`)
+  /**
+   * Run `fn` with a live or prepared observation, releasing the lease exactly
+   * once on EVERY exit path — success, thrown error, or cancellation. This is
+   * the B05 fix: the old `ensurePreview` observed but never disposed.
+   */
+  async withObservation(sessionId, fn) {
+    this.#assertActive();
+    const query = this.#services.sessionQuery;
+    if (query == null) throw new Error("branchman: sessionQuery is not available");
+    const generation = this.#generation;
+    const lease = await query.observeSession(sessionId);
     try {
-      await writeFile(patchFile, mainDiff + '\n', 'utf8')
-      await git(gitPath, worktree, ['apply', '--whitespace=nowarn', patchFile])
-      const files = mainDiff.split('\n').filter(line => line.startsWith('diff --git')).length
-      carriedParts.push(`${files} 个已跟踪文件的改动`)
-    } catch (error) {
-      carryFailed.push(`已跟踪改动 apply 失败：${String(error.message ?? error).split('\n')[0]}`)
+      this.#assertActive();
+      if (generation !== this.#generation) throw new Error("branchman: host services changed during observation");
+      const observation = { events: lease.events, cursor: lease.cursor, header: lease.header, projections: lease.projections };
+      return await fn(observation);
     } finally {
-      try { await rm(patchFile, { force: true }) } catch { /* already gone */ }
+      lease[Symbol.dispose]();
     }
   }
-  {
-    let copied = 0
-    for (const rel of untracked) {
+  /**
+   * Resolve a session's presence without conflating "detached from live" with
+   * "deleted" (B07). Live is checked first; only when the session is not live
+   * do we consult the persisted corpus; a corpus read failure is `unknown`,
+   * never `missing`.
+   */
+  async sessionPresence(sessionId) {
+    this.#assertActive();
+    const sessions = this.#services.sessions;
+    if (sessions != null && typeof sessions.get === "function") {
+      if (sessions.get(sessionId) !== void 0) return "live";
+    }
+    const query = this.#services.sessionQuery;
+    if (query == null || typeof query.listSessions !== "function") return "unknown";
+    const generation = this.#generation;
+    try {
+      const records = await query.listSessions();
+      if (this.#disposed || generation !== this.#generation) return "unknown";
+      for (const record of records) {
+        if (record?.header?.id === sessionId) return "persisted";
+      }
+      return "missing";
+    } catch {
+      return "unknown";
+    }
+  }
+  async dispose() {
+    this.#disposed = true;
+    this.#generation++;
+    this.#services = {};
+  }
+  #assertActive() {
+    if (this.#disposed) throw new Error("branchman: host adapter is disposed");
+  }
+};
+
+// src/host/operations.ts
+import { mkdir as mkdir2, readdir, readFile as readFile2, rename as rename2, rm as rm2, open as open2 } from "node:fs/promises";
+import { join } from "node:path";
+function requestDigest(body) {
+  const canonical = (v) => Array.isArray(v) ? v.map(canonical) : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, canonical(x)])) : v;
+  return JSON.stringify(canonical(body));
+}
+var IdempotencyConflictError = class extends Error {
+  constructor(id) {
+    super(`requestId "${id}" was already used with a different body`);
+    this.name = "IdempotencyConflictError";
+  }
+};
+var OperationsEngine = class {
+  #effects;
+  #now;
+  #journal;
+  #records = /* @__PURE__ */ new Map();
+  #byRequest = /* @__PURE__ */ new Map();
+  #inflight = /* @__PURE__ */ new Map();
+  #queues = /* @__PURE__ */ new Map();
+  #ready;
+  constructor(effects, now = () => (/* @__PURE__ */ new Date()).toISOString(), options = {}) {
+    this.#effects = effects;
+    this.#now = now;
+    this.#journal = options.journalDirectory;
+    this.#ready = this.#load();
+  }
+  async ready() {
+    await this.#ready;
+  }
+  async #load() {
+    if (!this.#journal) return;
+    await mkdir2(this.#journal, { recursive: true });
+    for (const file of await readdir(this.#journal)) {
+      if (!/^[\da-f-]{36}\.json$/i.test(file)) continue;
+      const r = JSON.parse(await readFile2(join(this.#journal, file), "utf8"));
+      if (typeof r.id !== "string" || file !== `${r.id}.json` || typeof r.requestId !== "string" || !["fork", "merge", "sync", "remove"].includes(r.kind) || !["running", "succeeded", "failed", "recovery-required"].includes(r.state) || !Array.isArray(r.ownedResources) || typeof r.requestDigest !== "string") throw new Error(`invalid operation journal: ${file}`);
+      const interrupted = r.state === "running";
+      if (interrupted) {
+        r.state = "recovery-required";
+        r.errorCode = "interrupted";
+      }
+      if (this.#byRequest.has(r.requestId)) throw new Error(`duplicate requestId in operation journal: ${r.requestId}`);
+      this.#records.set(r.id, r);
+      this.#byRequest.set(r.requestId, r.id);
+      if (interrupted) await this.#save(r);
+    }
+  }
+  async #save(record) {
+    if (this.#journal) {
+      const dest = join(this.#journal, `${record.id}.json`), tmp = `${dest}.${newId()}.tmp`;
       try {
-        const src = join(root, rel)
-        const dst = join(worktree, rel)
-        if (!existsSync(src)) continue // 列表与复制之间被删掉的竞态，跳过
-        await mkdir(dirname(dst), { recursive: true })
-        await copyFile(src, dst)
-        copied += 1
-      } catch { /* 单个文件复制失败不碍事 */ }
-    }
-    if (copied > 0) carriedParts.push(`${copied} 个未跟踪新文件`)
-  }
-  if (carryFailed.length > 0) {
-    carryNote = `${carryFailed[0]}——它们仍留在主线上`
-  } else if (carriedParts.length > 0) {
-    carryNote = `已把主线的未提交改动带进该走向（${carriedParts.join(' + ')}），主线保持不动`
-  }
-
-  // p1-fix2 (2026-09-28): the origin guard is CONDITIONAL — omitting `origin`
-  // passes validation entirely (validateSessionHeader only rejects a present
-  // origin that isn't "subagent"). The earlier "origin must be subagent"
-  // failure was self-inflicted: we were the ones passing origin:'branchman'.
-  //
-  // p3-fix: the whole post-worktree half rolls the worktree back on failure,
-  // so a failed fork can never leave an orphan directory or branch.
-  // p5-fix: the child is now created through the host's own fork shape, so it
-  // inherits the source conversation instead of starting empty.
-  let childSessionId = null
-  let child
-  let node
-  let workspace = {}
-  try {
-    child = await createChildSession(ctx, {
-      worktree,
-      // The tool contract names it currentSessionId; the Web body names it
-      // sourceSessionId. Accept either so neither caller silently loses the
-      // history seed (a missing source degrades to an empty child).
-      sourceSessionId: args?.currentSessionId ?? args?.sourceSessionId,
-      boundarySeq: args?.boundarySeq,
-      // The per-message control sends the message it sits under; without it the
-      // child forks from the latest finished turn instead of that section.
-      messageId: args?.messageId,
-    })
-    childSessionId = child.sessionId
-    workspace = await attachDirectionWorkspace(ctx, { worktree, name, childSessionId: child.sessionId })
-
-    // Tree edges need the parent DIRECTION, not just the parent session: when
-    // the source conversation itself sits in a direction worktree, that
-    // direction becomes this node's parent.
-    const sourceCwd = typeof args?.sourceCwd === 'string' ? args.sourceCwd : null
-    const parentName = sourceCwd !== null && /(^|[\\/])\.branches[\\/]/.test(sourceCwd)
-      ? (sourceCwd.split(/[\\/]/).filter(Boolean).at(-1) ?? null)
-      : null
-
-    node = await store.mutate(() => store.upsert({
-      name, cwd: worktree, root, branch, parentName,
-      parentSessionId: args?.currentSessionId ?? undefined, parentTitle: null,
-      sessionId: childSessionId, sessionTitle: `走向 ${name}`,
-      inheritedEvents: child.inherited,
-      workspaceId: workspace.workspaceId,
-    }))
-    // 随手开是常态：一句 brief 是这条走向最可靠的"内容摘要"（用户自己的话，
-    // 而且此刻就可用，不必等读子会话日志）。手写的 preview 会阻止
-    // ensurePreview 的日志回退——正是想要的优先级。
-    const brief = flattenText(args?.brief)
-    if (brief !== '') await store.mutate(() => store.upsert({ name, preview: brief.slice(0, 80) }))
-  } catch (error) {
-    try {
-      await git(gitPath, root, ['worktree', 'remove', worktree.replace(/\\/g, '/'), '--force'])
-      await git(gitPath, root, ['worktree', 'prune'])
-      await git(gitPath, root, ['branch', '-D', branch])
-      ctx.logger?.warn?.(`branchman: fork failed, worktree rolled back: ${error.message}`)
-    } catch (rollbackError) {
-      ctx.logger?.warn?.(`branchman: fork failed AND rollback failed: ${rollbackError.message}`)
-    }
-    throw error
-  }
-
-  if (workspace.warning !== undefined) ctx.logger?.warn?.(`branchman: ${workspace.warning}`)
-  // Where the cut came from, in words: a user clicking the control under an
-  // older message needs to see that the child starts THERE, not at the tail.
-  const cut = child.boundarySource === 'message'
-    ? `（从你点的那条消息所在回合分叉，seq ≤ ${child.boundary}）`
-    : child.boundarySource === 'atSeq' ? `（指定边界 seq ${child.boundary}）`
-      : child.boundarySource === 'latest-turn' ? '（从最新完成的回合分叉）' : ''
-  return {
-    name: node.name, branch: node.branch, cwd: node.cwd, sessionId: node.sessionId,
-    seeded: child.seeded, inheritedEvents: child.inherited,
-    boundarySeq: child.boundary ?? null, boundarySource: child.boundarySource,
-    workspaceId: workspace.workspaceId ?? null,
-    ...(workspace.warning === undefined ? {} : { workspaceWarning: workspace.warning }),
-    hint: `走向「${name}」已建立。\n  目录: ${worktree}\n  分支: ${branch}`
-      + (carryNote !== '' ? `\n  ${carryNote}` : '')
-      + (node.sessionId === null
-        ? '\n  （子会话创建失败，但 worktree 可用——可手动指向该目录）'
-        : child.seeded
-          ? `\n  新会话: ${node.sessionId}（继承前 ${child.inherited} 条事件${cut}，工作区=worktree 目录，已在左侧归到「走向 ${name}」）`
-          : `\n  新会话: ${node.sessionId}（⚠ 未继承历史——新会话是空的，工作区=worktree 目录）`)
-      + (workspace.warning === undefined ? '' : `\n  ⚠ ${workspace.warning}`),
-  }
-}
-
-async function doTree(store) {
-  await store.ready
-  // An archived session is hidden from EVERY grouping surface (`sessionVisible`
-  // filters the archive set out of every workspace group), so a direction whose
-  // session was archived is invisible in the sidebar no matter which workspace
-  // owns it — attaching a workspace alone would leave it just as absent. The
-  // tree reports the flag instead of letting the direction look missing.
-  const archived = archivedSessionIds()
-  // Fill missing previews once per node; the result is cached in tree.json, so
-  // the cost (one observeSession per cold node) is paid a single time, not per
-  // 4-second poll. Nodes without a sessionQuery capability never try.
-  if (optional.sessionQuery !== null) {
-    for (const node of store.state.nodes) {
-      if (node.preview !== undefined && node.preview !== null) continue
-      await ensurePreview(node)
-      if (node.preview !== undefined) await store.mutate(() => store.upsert({ name: node.name, preview: node.preview }))
-    }
-  }
-  // ── 主线：现存的、未被分支过的对话本身 ──────────────────────────────
-  // 此前树上的"主线"只是仓库目录占位，而真正的树干——那些从没被分支过的
-  // 对话——从没出现过；走向的 parentSessionId 明明指着其中一条。这里经
-  // sessionQuery 列出每个已知仓库根下的主线对话（cwd 在根下且不在
-  // .branches 里；走向自己的会话住在 worktree，天然被排除），标题用批量
-  // 标题快照补齐（冷会话也有真标题），归档状态一并标记。每次轮询都重列：
-  // listSessions 走持久化索引，量级与侧栏同源。
-  const mainline = []
-  if (optional.sessionQuery !== null && typeof optional.sessionQuery.listSessions === 'function') {
-    try {
-      const roots = new Map()
-      for (const node of store.state.nodes) {
-        const root = String(node.root ?? '').replace(/[\\/]+$/, '')
-        if (root === '') continue
-        roots.set(root.toLowerCase(), root)
-      }
-      if (roots.size > 0) {
-        const records = await optional.sessionQuery.listSessions()
-        const bucket = new Map()
-        for (const record of records) {
-          const cwd = typeof record?.header?.cwd === 'string' ? record.header.cwd : null
-          if (cwd === null || /(^|[\\/])\.branches[\\/]/.test(cwd)) continue
-          const lower = cwd.toLowerCase()
-          let rootKey = null
-          for (const [key] of roots) {
-            if (lower.startsWith(key) && (rootKey === null || key.length > rootKey.length)) rootKey = key
-          }
-          if (rootKey === null) continue
-          if (!bucket.has(rootKey)) bucket.set(rootKey, [])
-          bucket.get(rootKey).push({ sessionId: record.header.id, cwd })
+        const handle = await open2(tmp, "wx");
+        try {
+          await handle.writeFile(JSON.stringify(record, null, 2));
+          await handle.sync();
+        } finally {
+          await handle.close();
         }
-        for (const [key, sessions] of bucket) {
-          const ids = sessions.map(entry => entry.sessionId)
-          let titles = []
-          try { titles = await optional.sessionQuery.readTitleSnapshots(ids) } catch { /* 标题缺省，客户端兜底 */ }
-          const entries = sessions.map((entry, index) => {
-            const raw = Array.isArray(titles) ? titles[index]?.title : undefined
-            return {
-              sessionId: entry.sessionId, cwd: entry.cwd,
-              archived: archived.has(entry.sessionId),
-              ...(typeof raw === 'string' && raw !== '' ? { title: raw.slice(0, 120) } : {}),
-            }
-          })
-          mainline.push({ root: roots.get(key), sessions: entries })
-        }
+        await rename2(tmp, dest);
+      } catch (error) {
+        await rm2(tmp, { force: true }).catch(() => {
+        });
+        throw error;
       }
-    } catch { /* 会话查询不可用时主线缺席，走向照常渲染 */ }
+    }
+    this.#records.set(record.id, structuredClone(record));
+    this.#byRequest.set(record.requestId, record.id);
   }
-  return {
-    version: store.state.version,
-    // Self-report so a support question is one call away: if defineTool is
-    // false the model sees un-normalized parameters (args arrive empty), and
-    // if buildForkSeed is false direction children cannot inherit history.
-    capabilities: {
-      defineTool: defineTool !== null,
-      buildForkSeed: buildForkSeed !== null,
-      sessionQuery: optional.sessionQuery !== null,
-      agents: optional.agents !== null,
-      agentDefaultModel: optional.agentDefaultModel !== null,
-      // Without this a direction cannot own a Workspace, and its session shows
-      // up under 未分组 instead of the tree.
-      workspaceRegistry: optional.workspaceRegistry !== null,
-      // The client half reloads on a page refresh while the host half only
-      // reloads on a full restart, so the two can be a version apart. This flag
-      // is how the browser knows whether the operation routes behind its
-      // buttons actually exist yet.
-      operations: true,
-    },
-    mainline,
-    nodes: store.state.nodes.map(node => ({
-      name: node.name, parentName: node.parentName, root: node.root, cwd: node.cwd, branch: node.branch,
-      status: node.status, sessionId: node.sessionId, sessionTitle: node.sessionTitle,
-      preview: node.preview ?? null,
-      messageCount: node.messageCount, lastActivityAt: node.lastActivityAt,
-      inheritedEvents: node.inheritedEvents ?? 0,
-      workspaceId: node.workspaceId ?? null,
-      archived: typeof node.sessionId === 'string' && archived.has(node.sessionId),
-      // The conversation was deleted from the sidebar; the worktree and branch
-      // are untouched, so the direction is still real.
-      sessionMissing: typeof node.sessionId === 'string' && node.disposedSessionId === node.sessionId,
-      // The directory was removed by hand (`git worktree remove` outside the
-      // plugin, or a plain delete). Everything that needs the worktree fails on
-      // this, so it is reported rather than discovered by a failed click.
-      missingDir: !existsSync(node.cwd),
-    })),
+  #enqueue(repoId, work) {
+    const prev = this.#queues.get(repoId) ?? Promise.resolve();
+    const run = prev.then(work, work);
+    const tail = run.then(() => void 0, () => void 0);
+    this.#queues.set(repoId, tail);
+    void tail.then(() => {
+      if (this.#queues.get(repoId) === tail) this.#queues.delete(repoId);
+    });
+    return run;
   }
-}
-
-async function doStatus(ctx, store, config, args) {
-  const gitPath = config.gitPath
-  const out = []
-  for (const node of store.state.nodes) {
-    if (node.status !== 'open') continue
+  getOperation(id) {
+    const r = this.#records.get(id);
+    return r ? structuredClone(r) : void 0;
+  }
+  getByRequestId(id) {
+    const key = this.#byRequest.get(id);
+    return key ? this.getOperation(key) : void 0;
+  }
+  list() {
+    return [...this.#records.values()].map((r) => structuredClone(r));
+  }
+  summaries() {
+    return [...this.#records.values()].map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      state: r.state,
+      phase: r.phase,
+      errorCode: r.errorCode?.slice(0, 1e3) ?? null,
+      createdAt: r.createdAt,
+      directionId: r.directionId ?? null
+    })).sort((a, b) => a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
+  }
+  #result(r) {
+    return {
+      operationId: r.id,
+      directionId: r.directionId ?? null,
+      state: r.state,
+      phase: r.phase,
+      code: r.errorCode,
+      retryable: r.state === "failed" || r.state === "recovery-required"
+    };
+  }
+  #reserve(requestId, digest, work) {
+    const prior = this.#inflight.get(requestId);
+    if (prior) return prior.digest === digest ? prior.promise : Promise.reject(new IdempotencyConflictError(requestId));
+    const promise = Promise.resolve().then(work);
+    const slot = { digest, promise };
+    this.#inflight.set(requestId, slot);
+    void promise.then(() => {
+      if (this.#inflight.get(requestId) === slot) this.#inflight.delete(requestId);
+    }, () => {
+      if (this.#inflight.get(requestId) === slot) this.#inflight.delete(requestId);
+    });
+    return promise;
+  }
+  fork(request) {
+    const snapshot = structuredClone(request), digest = requestDigest({ kind: "fork", request: snapshot });
+    return this.#reserve(snapshot.requestId, digest, async () => {
+      await this.#ready;
+      const prior = this.getByRequestId(snapshot.requestId);
+      if (prior) {
+        if (prior.requestDigest !== digest) throw new IdempotencyConflictError(snapshot.requestId);
+        return this.#result(prior);
+      }
+      const identity = await this.#effects.identify(snapshot.sourceCwd);
+      return this.#enqueue(identity.repoId, async () => {
+        const record = {
+          id: newId(),
+          requestId: snapshot.requestId,
+          kind: "fork",
+          phase: "plan",
+          state: "running",
+          ownedResources: [],
+          errorCode: null,
+          requestDigest: digest,
+          createdAt: this.#now(),
+          request: snapshot
+        };
+        const directionId = newId();
+        record.plan = {
+          repoId: identity.repoId,
+          sourcePath: identity.worktreePath,
+          headOid: identity.headOid,
+          baseOid: snapshot.codeSource.kind === "explicit-commit" ? snapshot.codeSource.oid : identity.headOid,
+          directionId,
+          worktreeId: newId(),
+          branch: `branchman/${directionId}`,
+          worktreePath: join(identity.managedRoot ?? identity.worktreePath, ".branches", directionId)
+        };
+        await this.#save(record);
+        return this.#runFork(record);
+      });
+    });
+  }
+  async recover(operationId) {
+    await this.#ready;
+    const record = this.getOperation(operationId);
+    if (!record) throw new Error(`unknown operation ${operationId}`);
+    if (record.state === "succeeded") return this.#result(record);
+    if (record.kind !== "fork" || !record.request || !record.plan) throw new Error(`manual recovery required for ${record.kind}`);
+    return this.#reserve(record.requestId, record.requestDigest, () => this.#enqueue(record.plan.repoId, async () => {
+      let reconciled = record;
+      if (this.#effects.reconcile) reconciled = await this.#effects.reconcile(record);
+      else if (record.ownedResources.length > 0) {
+        record.state = "recovery-required";
+        record.errorCode = "resource-reconciliation-required";
+        await this.#save(record);
+        return this.#result(record);
+      }
+      if (reconciled.state === "succeeded") {
+        await this.#save(reconciled);
+        return this.#result(reconciled);
+      }
+      return this.#runFork(reconciled);
+    }));
+  }
+  async #runFork(record) {
+    const request = record.request, plan = record.plan;
+    const phase = async (value) => {
+      record.phase = value;
+      record.state = "running";
+      record.errorCode = null;
+      await this.#save(record);
+    };
     try {
-      const ahead = (await git(gitPath, node.cwd, ['rev-list', '--count', `main..${node.branch}`])).trim()
-      const behind = (await git(gitPath, node.cwd, ['rev-list', '--count', `${node.branch}..main`])).trim()
-      const dirty = (await git(gitPath, node.cwd, ['status', '--porcelain'])).trim().split('\n').filter(Boolean).length
-      out.push({ name: node.name, ahead: Number(ahead), behind: Number(behind), dirty })
+      if (!record.ownedResources.includes(`worktree:${plan.worktreePath}`)) {
+        await phase("capture");
+        const captured = await this.#effects.captureChanges?.(structuredClone(record));
+        if (captured) {
+          record.resolvedBoundary = captured.boundary;
+          await this.#save(record);
+        }
+        await phase("create-worktree");
+        await this.#effects.createWorktree(plan.repoId, plan.branch, plan.worktreePath, plan.baseOid);
+        record.ownedResources.push(`worktree:${plan.worktreePath}`, `branch:${plan.branch}`);
+        await this.#save(record);
+      }
+      if (!record.child) {
+        if (request.codeSource.kind === "source-head" && request.codeSource.carryChanges) {
+          await phase("carry");
+          const carry = await this.#effects.carryChanges(plan.repoId, plan.worktreePath, structuredClone(record));
+          if (carry.failed.length) throw new Error(`carry-incomplete: ${carry.failed.join(", ")}`);
+        }
+        await phase("create-session");
+        record.child = await this.#effects.createChildSession({
+          worktreePath: plan.worktreePath,
+          sourceSessionId: request.sourceSessionId,
+          history: request.history,
+          ...request.messageId ? { messageId: request.messageId } : {},
+          ...record.resolvedBoundary != null ? { boundarySeq: record.resolvedBoundary } : request.boundarySeq !== void 0 ? { boundarySeq: request.boundarySeq } : {},
+          operationId: record.id
+        });
+        record.ownedResources.push(`session:${record.child.sessionId}`);
+        await this.#save(record);
+      }
+      if (request.history === "inherit" && !record.child.seeded) throw new Error("history-not-inherited");
+      await phase("attach-workspace");
+      const workspace = await this.#effects.attachWorkspace(plan.worktreePath, request.displayName, record.child.sessionId);
+      if (workspace.warning) throw new Error(`workspace-incomplete: ${workspace.warning}`);
+      if (workspace.workspaceId) {
+        record.workspaceId = workspace.workspaceId;
+        record.ownedResources.push(`workspace:${workspace.workspaceId}`);
+        await this.#save(record);
+      }
+      await phase("commit-direction");
+      await this.#effects.persistDirection({
+        directionId: plan.directionId,
+        repoId: plan.repoId,
+        worktreeId: plan.worktreeId,
+        displayName: request.displayName,
+        baseOid: plan.baseOid,
+        primarySessionId: record.child.sessionId,
+        worktreePath: plan.worktreePath,
+        branch: plan.branch,
+        brief: request.brief,
+        sourceSessionId: request.sourceSessionId,
+        ...request.messageId ? { messageId: request.messageId } : {},
+        ...record.child.boundary != null ? { boundarySeq: record.child.boundary } : request.boundarySeq !== void 0 ? { boundarySeq: request.boundarySeq } : {},
+        inheritedEventCount: record.child.inherited,
+        ...record.workspaceId ? { workspaceId: record.workspaceId } : {},
+        operationId: record.id
+      });
+      record.directionId = plan.directionId;
+      record.phase = "completed";
+      record.state = "succeeded";
+      await this.#save(record);
     } catch (error) {
-      out.push({ name: node.name, error: error.message.slice(0, 120) })
+      record.errorCode = error instanceof Error ? error.message : String(error);
+      let clean2 = record.ownedResources.length === 0;
+      if (!record.child && !["create-session", "attach-workspace", "commit-direction"].includes(record.phase) && record.ownedResources.includes(`worktree:${plan.worktreePath}`)) {
+        try {
+          await this.#effects.removeWorktree(plan.repoId, plan.worktreePath, plan.branch);
+          record.ownedResources = [];
+          clean2 = true;
+        } catch {
+          clean2 = false;
+        }
+      }
+      record.state = clean2 ? "failed" : "recovery-required";
+      await this.#save(record);
     }
+    return this.#result(record);
   }
-  // Echo the root the caller meant when it named one; otherwise report where the
-  // open directions actually live rather than a configured default that may not
-  // be related to any of them.
-  return { root: args?.root ?? store.state.nodes[0]?.root ?? config.defaultRoot, directions: out }
-}
-
-async function doMerge(ctx, store, config, args) {
-  const name = String(args?.name ?? '').trim()
-  const node = store.state.nodes.find(item => item.name === name && item.status === 'open')
-  if (node === undefined) throw new Error(`没有进行中的走向「${name}」`)
-  const gitPath = config.gitPath
-  const dirty = (await git(gitPath, node.cwd, ['status', '--porcelain'])).trim()
-  if (dirty !== '') throw new Error(`走向有未提交改动，先在其目录内提交（${dirty.split('\n').length} 项）`)
-  // The main line must be clean too: merging into a dirty root mixes unrelated
-  // work into the absorption, and the p4-fix dropped the old `git add -A`
-  // which silently staged whatever the user had open.
-  await ensureBranchesIgnored(node.root)
-  await assertCleanRepo(gitPath, node.root)
-  // --no-ff: an absorbed direction must leave a merge commit naming it. A plain
-  // fast-forward erases the fact that a direction existed at all, which is the
-  // one thing the tree is for.
-  await git(gitPath, node.root, ['merge', '--no-ff', node.branch, '--no-edit', '-m', `merge: 吸收走向 ${name}`])
-  node.status = 'merged'
-  node.mergedAt = new Date().toISOString()
-  await store.mutate(() => undefined)
-  return { merged: name, root: node.root, hint: `已合回主线 ${node.root}（merge commit 记录在案）。确认后可 branch_drop 拆除 worktree。` }
-}
-
-async function doDrop(ctx, store, config, args) {
-  const name = String(args?.name ?? '').trim()
-  // p4-fix: a MERGED direction still owns a worktree and a branch. Matching
-  // only 'open' made merged directions un-droppable — the worktree stayed on
-  // disk forever with no way to reclaim it.
-  const node = store.state.nodes.find(item => item.name === name && item.status !== 'dropped')
-  if (node === undefined) throw new Error(`没有可拆除的走向「${name}」（已拆除或不存在）`)
-  const gitPath = config.gitPath
-  // Resolve the Workspace registration BEFORE the worktree disappears: the
-  // registry canonicalizes through realpath, which cannot resolve a directory
-  // that is already gone. Without this the empty "走向 X" group would outlive
-  // the direction it named.
-  const workspaceId = await findDirectionWorkspaceId(node)
-  const wtGit = node.cwd.replace(/\\/g, '/')
-  try { await git(gitPath, node.root, ['worktree', 'remove', wtGit, '--force']) } catch { /* already gone */ }
-  try { await git(gitPath, node.root, ['worktree', 'prune']) } catch { /* noop */ }
-  try { await git(gitPath, node.root, ['branch', '-D', node.branch]) } catch { /* already gone */ }
-  node.status = 'dropped'
-  node.droppedAt = new Date().toISOString()
-  await store.mutate(() => undefined)
-  const warning = await dropDirectionWorkspace(workspaceId)
-  return { dropped: name, ...(warning === undefined ? {} : { workspaceWarning: warning }) }
-}
-
-/**
- * The Workspace a direction owns: the id recorded at fork time, or — for nodes
- * written by an earlier version — whatever the registry resolves for its
- * worktree path right now.
- */
-async function findDirectionWorkspaceId(node) {
-  if (typeof node.workspaceId === 'string' && node.workspaceId !== '') return node.workspaceId
-  const registry = optional.workspaceRegistry
-  if (registry === null || registry === undefined || typeof registry.resolveByPath !== 'function' || typeof node.cwd !== 'string') return undefined
-  try {
-    const entity = await registry.resolveByPath(node.cwd)
-    return entity?.id === undefined || entity?.id === null ? undefined : String(entity.id)
-  } catch {
-    // A missing directory is the normal case for an already-removed worktree.
-    return undefined
+  run(kind, requestId, payload, repoId, effect) {
+    const digest = requestDigest({ kind, payload });
+    return this.#reserve(requestId, digest, async () => {
+      await this.#ready;
+      const prior = this.getByRequestId(requestId);
+      if (prior) {
+        if (prior.requestDigest !== digest) throw new IdempotencyConflictError(requestId);
+        return this.#result(prior);
+      }
+      return this.#enqueue(repoId, async () => {
+        const record = {
+          id: newId(),
+          requestId,
+          kind,
+          phase: kind,
+          state: "running",
+          ownedResources: [],
+          errorCode: null,
+          requestDigest: digest,
+          createdAt: this.#now()
+        };
+        await this.#save(record);
+        try {
+          await effect();
+          record.state = "succeeded";
+          record.phase = "completed";
+        } catch (error) {
+          record.state = "recovery-required";
+          record.errorCode = error instanceof Error ? error.message : String(error);
+        }
+        await this.#save(record);
+        return this.#result(record);
+      });
+    });
   }
-}
-
-async function dropDirectionWorkspace(workspaceId) {
-  const registry = optional.workspaceRegistry
-  if (workspaceId === undefined || registry === null || registry === undefined || typeof registry.delete !== 'function') return undefined
-  try {
-    await registry.delete(workspaceId)
-    return undefined
-  } catch (error) {
-    return `工作区登记未注销（目录与会话记录仍在）：${error.message}`
+  async remove(request) {
+    const repoId = await this.#effects.directionRepo?.(request.directionId) ?? `direction:${request.directionId}`;
+    return this.run("remove", request.requestId, request, repoId, () => this.#effects.removeDirection(repoId, request.directionId, ""));
   }
-}
+};
 
-/**
- * Absorb the main line into a direction: the reverse of `branch_merge`, and the
- * "同步最新信息" half of the original brief. A direction that has fallen behind
- * main is exactly the case where a full clone would have been painful.
- */
-async function doSync(ctx, store, config, args) {
-  const name = String(args?.name ?? '').trim()
-  const node = store.state.nodes.find(item => item.name === name && item.status === 'open')
-  if (node === undefined) throw new Error(`没有进行中的走向「${name}」`)
-  const gitPath = config.gitPath
-  const dirty = (await git(gitPath, node.cwd, ['status', '--porcelain'])).trim()
-  if (dirty !== '') throw new Error(`走向有未提交改动，先在其目录内提交（${dirty.split('\n').length} 项）`)
-  await ensureBranchesIgnored(node.root)
-  const from = typeof args?.from === 'string' && args.from !== '' ? args.from : 'main'
-  const output = await git(gitPath, node.cwd, ['merge', '--no-ff', from, '--no-edit', '-m', `merge: 走向 ${name} 同步 ${from}`])
-  node.lastActivityAt = new Date().toISOString()
-  await store.mutate(() => undefined)
-  return { synced: name, from, output: output.trim().slice(0, 400) }
-}
-
-/**
- * The registry's global archive set, or an empty set when it is unavailable.
- * An archived session is filtered out of EVERY workspace group, so callers use
- * this to decide whether a workspace is worth registering at all.
- */
-function archivedSessionIds() {
-  const registry = optional.workspaceRegistry
-  const ids = registry === null || registry === undefined ? undefined : registry.archivedSessionIds
-  return new Set(Array.isArray(ids) ? ids.map(String) : [])
-}
-
-/**
- * Give the directions that predate workspace accounting a workspace of their
- * own.
- *
- * 0.1.x registered none, and the registry's own history reconciliation runs
- * ONCE (only while its domain is uninitialized) — so without this an
- * already-existing direction stays under 未分组 even after the upgrade. Called
- * from the `workspaceRegistry` injection, never from apply directly: sampling
- * the service at activation time would race its own arrival and skip every
- * direction with a "registry unavailable" warning.
- *
- * An ARCHIVED session is skipped on purpose: it is hidden in every group, so
- * registering a workspace for it would add an empty group to the sidebar and
- * change nothing the user can see. The overview's explicit 取消归档 does both
- * halves in one click instead.
- *
- * Idempotent and fire-and-forget; a removed directory or a missing session id
- * is skipped, never an error.
- */
-async function backfillDirectionWorkspaces(ctx, store) {
-  await store.ready
-  const archived = archivedSessionIds()
-  for (const node of store.state.nodes) {
-    if (node.status === 'dropped' || typeof node.cwd !== 'string' || !existsSync(node.cwd)) continue
-    if (typeof node.sessionId === 'string' && archived.has(node.sessionId)) {
-      ctx.logger?.warn?.(`branchman: 走向「${node.name}」的会话已归档——跳过工作区登记（在走向总览里点「取消归档」会一并补上）`)
-      continue
+// src/host/changes.ts
+import { mkdir as mkdir3, readFile as readFile3, writeFile, copyFile, lstat, realpath, stat, rm as rm3 } from "node:fs/promises";
+import { join as join2, dirname as dirname2, resolve, relative, isAbsolute } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+var paths = ["--", ".", ":(exclude).branches"];
+var sha = (raw) => createHash2("sha256").update(raw).digest("hex");
+var ChangeSnapshots = class {
+  constructor(git, directory) {
+    this.git = git;
+    this.directory = directory;
+  }
+  folder(op) {
+    return join2(this.directory, op.id);
+  }
+  async capture(op) {
+    const p = op.plan, root = p.sourcePath, folder = this.folder(op);
+    await mkdir3(folder, { recursive: true });
+    const head = (await this.git.run(["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    if (head !== p.headOid) throw new Error("source HEAD changed after planning; submit a new request");
+    const status = () => this.git.run(["status", "--porcelain=v1", "-z", "--untracked-files=all", ...paths], { cwd: root });
+    const before = (await status()).stdout;
+    const patch = join2(folder, "changes.patch");
+    await this.git.run(["diff", "--binary", "--no-ext-diff", `--output=${patch}`, p.headOid, ...paths], { cwd: root, timeoutMs: 6e4 });
+    const untracked = (await this.git.run(["ls-files", "--others", "--exclude-standard", "-z", ...paths], { cwd: root })).stdout.split("\0").filter(Boolean);
+    const tracked = (await this.git.run(["diff", "--name-only", "-z", p.headOid, ...paths], { cwd: root })).stdout.split("\0").filter(Boolean);
+    const names = [.../* @__PURE__ */ new Set([...untracked, ...tracked])];
+    const files = [];
+    for (const name of names) {
+      if (isAbsolute(name) || name.split(/[\\/]/).includes("..")) throw new Error("unsafe untracked path");
+      const source = resolve(root, name), canonicalRoot = await realpath(root);
+      try {
+        await lstat(source);
+      } catch (e) {
+        if (e.code === "ENOENT" && tracked.includes(name)) continue;
+        throw e;
+      }
+      const canonicalSource = await realpath(source);
+      const rel = relative(canonicalRoot, canonicalSource);
+      if (rel.startsWith("..") || isAbsolute(rel) || !(await lstat(source)).isFile()) throw new Error(`unsupported external/symlink file: ${name}`);
+      let ancestor = source;
+      while (ancestor !== resolve(root)) {
+        if ((await lstat(ancestor)).isSymbolicLink()) throw new Error(`symlink requires manual carry: ${name}`);
+        ancestor = dirname2(ancestor);
+      }
+      const dest = join2(folder, "untracked", name);
+      await mkdir3(dirname2(dest), { recursive: true });
+      await copyFile(source, dest);
+      files.push({ path: name, hash: sha(await readFile3(dest)), tracked: tracked.includes(name) });
     }
-    const result = await attachDirectionWorkspace(ctx, {
-      worktree: node.cwd, name: node.name, childSessionId: node.sessionId,
-    })
-    if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: 走向「${node.name}」${result.warning}`)
-    if (result.workspaceId === undefined || node.workspaceId === result.workspaceId) continue
-    await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId })).catch(() => {})
+    if ((await status()).stdout !== before || (await this.git.run(["rev-parse", "HEAD"], { cwd: root })).stdout.trim() !== head) throw new Error("source changed during capture; retry with a new request");
+    for (const item of files) if (sha(await readFile3(join2(root, item.path))) !== item.hash) throw new Error("source bytes changed during capture");
+    const verificationPatch = join2(folder, "verify.patch");
+    try {
+      await this.git.run(["diff", "--binary", "--no-ext-diff", `--output=${verificationPatch}`, p.headOid, ...paths], { cwd: root, timeoutMs: 6e4 });
+      if (sha(await readFile3(verificationPatch)) !== sha(await readFile3(patch))) throw new Error("source diff changed during capture");
+    } finally {
+      await rm3(verificationPatch, { force: true });
+    }
+    await writeFile(join2(folder, "capture.json"), JSON.stringify({ baseOid: head, files, patchHash: sha(await readFile3(patch)) }));
   }
+  async carry(op) {
+    const folder = this.folder(op), target = op.plan.worktreePath;
+    const capture = JSON.parse(await readFile3(join2(folder, "capture.json"), "utf8"));
+    const patch = join2(folder, "changes.patch"), raw = await readFile3(patch);
+    if (capture.patchHash !== sha(raw)) throw new Error("capture checksum mismatch");
+    const marker = join2(folder, "carried.json");
+    const targetDiff = async () => {
+      const path = join2(folder, "target-verify.patch");
+      try {
+        await this.git.run(["diff", "--binary", "--no-ext-diff", `--output=${path}`, capture.baseOid, ...paths], { cwd: target });
+        return sha(await readFile3(path));
+      } finally {
+        await rm3(path, { force: true });
+      }
+    };
+    const targetStatus = async () => (await this.git.run(["status", "--porcelain=v1", "-z", "--untracked-files=all", ...paths], { cwd: target })).stdout;
+    try {
+      const finished2 = JSON.parse(await readFile3(marker, "utf8"));
+      if (finished2.version !== 1 || finished2.baseOid !== capture.baseOid || (await this.git.run(["rev-parse", "HEAD"], { cwd: target })).stdout.trim() !== capture.baseOid || finished2.status !== await targetStatus() || finished2.diffHash !== await targetDiff()) throw new Error("carried worktree changed; manual recovery required");
+      for (const item of finished2.files) {
+        let hash;
+        try {
+          hash = sha(await readFile3(join2(target, item.path)));
+        } catch (e) {
+          if (e.code !== "ENOENT") throw e;
+          hash = null;
+        }
+        if (hash !== item.hash) throw new Error("carried worktree changed; manual recovery required");
+      }
+      return { carried: finished2.files.map((f) => f.path), failed: [] };
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    const dirty = (await this.git.run(["status", "--porcelain=v1", ...paths], { cwd: target })).stdout.trim();
+    if (dirty) throw new Error("partial carry detected; manual recovery required");
+    if (raw.length) await this.git.run(["apply", "--check", "--binary", patch], { cwd: target });
+    for (const item of capture.files) {
+      const source = join2(folder, "untracked", item.path);
+      if (sha(await readFile3(source)) !== item.hash) throw new Error("untracked capture checksum mismatch");
+      if (item.tracked) continue;
+      try {
+        await stat(join2(target, item.path));
+        throw new Error(`untracked target already exists: ${item.path}`);
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+      }
+    }
+    if (raw.length) await this.git.run(["apply", "--binary", patch], { cwd: target });
+    for (const item of capture.files) {
+      const dest = join2(target, item.path);
+      await mkdir3(dirname2(dest), { recursive: true });
+      await copyFile(join2(folder, "untracked", item.path), dest);
+    }
+    const changed = (await this.git.run(["diff", "--name-only", "-z", capture.baseOid, ...paths], { cwd: target })).stdout.split("\0").filter(Boolean);
+    const finished = [];
+    for (const name of /* @__PURE__ */ new Set([...changed, ...capture.files.map((f) => f.path)])) {
+      try {
+        finished.push({ path: name, hash: sha(await readFile3(join2(target, name))) });
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+        finished.push({ path: name, hash: null });
+      }
+    }
+    await writeFile(marker, JSON.stringify({ version: 1, baseOid: capture.baseOid, diffHash: await targetDiff(), status: await targetStatus(), files: finished }));
+    return { carried: [...changed, ...capture.files.map((f) => f.path)], failed: [] };
+  }
+};
+
+// src/host/session-fork.ts
+function latestCompletedPrefixBoundary(events) {
+  const end = events.findLastIndex((e) => e.type === "turn/end");
+  if (end < 0) return void 0;
+  let boundary = events[end].seq;
+  for (const next of events.slice(end + 1)) {
+    if (next.type === "turn/start" || next.type === "user/message" && next.surfaceOp === "append" || next.type === "agent/inbox/spliced") break;
+    boundary = next.seq;
+  }
+  return boundary;
+}
+function resolveMessageBoundary(events, messageId) {
+  const at = events.findIndex((e) => e?.data?.message?.id === messageId || e?.data?.id === messageId);
+  if (at < 0) return void 0;
+  const end = events.findIndex((e, i) => i >= at && e.type === "turn/end");
+  if (end < 0) return void 0;
+  let boundary = events[end].seq;
+  for (const next of events.slice(end + 1)) {
+    if (next.type === "turn/start" || next.type === "user/message" && next.surfaceOp === "append" || next.type === "agent/inbox/spliced") break;
+    boundary = next.seq;
+  }
+  return boundary;
+}
+function forkBoundary(events, input) {
+  const cut = input.boundarySeq ?? (input.messageId ? resolveMessageBoundary(events, input.messageId) : latestCompletedPrefixBoundary(events));
+  if (!Number.isSafeInteger(cut) || events[cut]?.seq !== cut) throw new Error(input.messageId ? "message has no completed fork boundary" : "source has no valid completed fork boundary");
+  return cut;
 }
 
-/**
- * Undo a direction's archival — and register its workspace first.
- *
- * Both halves are needed and they must happen together: unarchiving a session
- * that owns no workspace only moves it from "hidden everywhere" to 未分组,
- * which is the complaint this whole change exists for. The registry exposes
- * `unarchiveSession` directly, so the overview's single click can do both
- * without going through the client workspace service.
- */
-async function doUnarchive(ctx, store, config, args) {
-  const name = String(args?.name ?? '').trim()
-  const node = store.state.nodes.find(item => item.name === name)
-  if (node === undefined) throw new Error(`没有这条走向「${name}」`)
-  const registry = optional.workspaceRegistry
-  if (registry === null || registry === undefined || typeof registry.unarchiveSession !== 'function') {
-    throw new Error('宿主未提供 workspaceRegistry.unarchiveSession，无法取消归档')
+// src/host/api.ts
+var PROTOCOL_VERSION = 2;
+var SCHEMA_VERSION = 2;
+var BUILD_ID = "0.3.0";
+var ApiValidationError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "ApiValidationError";
+    this.code = code;
   }
-  const result = await attachDirectionWorkspace(ctx, { worktree: node.cwd, name: node.name, childSessionId: node.sessionId })
-  if (result.workspaceId !== undefined && node.workspaceId !== result.workspaceId) {
-    await store.mutate(() => store.upsert({ name: node.name, workspaceId: result.workspaceId }))
-  }
-  if (typeof node.sessionId === 'string' && node.sessionId !== '') {
-    await registry.unarchiveSession(node.sessionId)
+};
+var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function requireString2(value, field) {
+  if (typeof value !== "string" || value.trim() === "") throw new ApiValidationError("invalid-argument", `${field} must be a non-empty string`);
+  return value;
+}
+function optionalString2(value, field) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "string") throw new ApiValidationError("invalid-argument", `${field} must be a string`);
+  return value;
+}
+function parseForkRequest(body) {
+  if (!isRecord3(body)) throw new ApiValidationError("invalid-argument", "body must be an object");
+  const requestId = requireString2(body.requestId, "requestId");
+  const sourceSessionId = requireString2(body.sourceSessionId, "sourceSessionId");
+  const sourceCwd = requireString2(body.sourceCwd, "sourceCwd");
+  const displayName = requireString2(body.displayName, "displayName");
+  if (displayName.length > 120 || /[\u0000-\u001f]/.test(displayName)) throw new ApiValidationError("invalid-argument", "displayName exceeds 120 characters or contains control characters");
+  if (body.brief !== void 0 && typeof body.brief !== "string") throw new ApiValidationError("invalid-argument", "brief must be a string");
+  const brief = typeof body.brief === "string" ? body.brief : "";
+  if (brief.length > 8e3) throw new ApiValidationError("invalid-argument", "brief exceeds 8000 characters");
+  const messageId = optionalString2(body.messageId, "messageId");
+  const boundarySeq = typeof body.boundarySeq === "number" && Number.isSafeInteger(body.boundarySeq) ? body.boundarySeq : void 0;
+  if (body.boundarySeq !== void 0 && (boundarySeq === void 0 || boundarySeq < 0)) throw new ApiValidationError("invalid-argument", "boundarySeq must be a non-negative safe integer");
+  if (body.history !== void 0 && body.history !== "blank" && body.history !== "inherit") throw new ApiValidationError("invalid-argument", "history must be inherit or blank");
+  const history = body.history === "blank" ? "blank" : "inherit";
+  const codeSourceRaw = body.codeSource;
+  if (!isRecord3(codeSourceRaw)) throw new ApiValidationError("invalid-argument", "codeSource must be an object");
+  let codeSource;
+  if (codeSourceRaw.kind === "source-head") {
+    if (codeSourceRaw.carryChanges !== void 0 && typeof codeSourceRaw.carryChanges !== "boolean") throw new ApiValidationError("invalid-argument", "carryChanges must be boolean");
+    codeSource = { kind: "source-head", carryChanges: codeSourceRaw.carryChanges !== false };
+  } else if (codeSourceRaw.kind === "explicit-commit") {
+    const oid = requireString2(codeSourceRaw.oid, "codeSource.oid");
+    codeSource = { kind: "explicit-commit", oid, carryChanges: false };
+  } else {
+    throw new ApiValidationError("invalid-argument", "codeSource.kind must be source-head | explicit-commit");
   }
   return {
-    name: node.name, unarchived: node.sessionId ?? null, workspaceId: result.workspaceId ?? null,
-    ...(result.warning === undefined ? {} : { workspaceWarning: result.warning }),
-    hint: `走向「${name}」的会话已取消归档，并归到自己的工作区分组${result.warning === undefined ? '' : '（但有告警）'}。`,
+    requestId,
+    sourceSessionId,
+    sourceCwd,
+    ...messageId === void 0 ? {} : { messageId },
+    ...boundarySeq === void 0 ? {} : { boundarySeq },
+    displayName,
+    brief,
+    codeSource,
+    history
+  };
+}
+function ok(data, revision) {
+  return { protocolVersion: PROTOCOL_VERSION, schemaVersion: SCHEMA_VERSION, buildId: BUILD_ID, revision, ok: true, data };
+}
+function errorEnvelope(error, operationId = null, retryable = false) {
+  if (error instanceof ApiValidationError) {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      schemaVersion: SCHEMA_VERSION,
+      buildId: BUILD_ID,
+      ok: false,
+      code: error.code,
+      message: error.message,
+      operationId,
+      retryable: false
+    };
   }
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    schemaVersion: SCHEMA_VERSION,
+    buildId: BUILD_ID,
+    ok: false,
+    code: "internal",
+    message,
+    operationId,
+    retryable
+  };
 }
 
-// ─────────────────────────── plugin entry ────────────────────────────
-
-/**
- * The conversation a tool call is running inside.
- *
- * `dsh-tools` calls `tool.execute(exec.arguments, exec)`, and `exec.agent` is
- * the calling agent — the same handle `dsh-deja` reads (`agent.sessionId ??
- * agent.session.id`, `agent.session.header.cwd`). Without it `branch_fork`
- * could only ever create an EMPTY child, because nothing else in a tool call
- * names the conversation to fork from.
- */
-function callerOf(exec) {
-  const agent = exec?.agent
-  const session = agent?.session
-  const sessionId = typeof agent?.sessionId === 'string' && agent.sessionId !== ''
-    ? agent.sessionId
-    : (typeof session?.id === 'string' && session.id !== '' ? session.id : null)
-  const cwd = typeof session?.header?.cwd === 'string' && session.header.cwd !== '' ? session.header.cwd : null
-  return { sessionId, cwd }
+// src/client/session-store.ts
+var BOILERPLATE_TITLE_RE = /^\s*reference attachments for (?:the )?goal objective\.?(?:\s*\(\d+\))?\s*$/i;
+var clean = (value) => {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text === "" ? null : text;
+};
+function isBoilerplateTitle(title) {
+  return BOILERPLATE_TITLE_RE.test(title);
+}
+function selectLabel(inputs) {
+  const userTitle = clean(inputs.userTitle);
+  if (userTitle !== null) return { text: userTitle.slice(0, 120), source: "user" };
+  const hostTitle = clean(inputs.hostTitle);
+  if (hostTitle !== null && !isBoilerplateTitle(hostTitle)) {
+    return { text: hostTitle.slice(0, 120), source: "host" };
+  }
+  const brief = clean(inputs.brief);
+  if (brief !== null) return { text: brief.slice(0, 120), source: "brief" };
+  const summary = clean(inputs.summary);
+  if (summary !== null) return { text: summary.slice(0, 120), source: "summary" };
+  const sessionId = clean(inputs.sessionId);
+  if (sessionId !== null) return { text: sessionId, source: "id" };
+  return null;
 }
 
-function readBody(req, limit = 64 * 1024) {
-  return new Promise((resolvePromise, reject) => {
-    let size = 0
-    const chunks = []
-    req.on('data', chunk => { size += chunk.length; if (size > limit) { reject(new Error('body too large')); req.destroy(); return } chunks.push(chunk) })
-    req.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', reject)
-  })
+// src/host/projection.ts
+var GOAL_BOILERPLATE_RE = /^\s*reference attachments for (?:the )?goal objective\.?\s*$/i;
+var PREVIEW_MAX = 80;
+var flattenText = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+function isTextBlock(block) {
+  return typeof block === "object" && block !== null && block.type === "text" && typeof block.text === "string";
+}
+function isUserMessageEvent(event) {
+  return event.type === "user/message" && typeof event.data === "object" && event.data !== null;
+}
+function derivePreview(events) {
+  if (!Array.isArray(events)) return null;
+  let objective = null;
+  let firstHuman = null;
+  for (const raw of events) {
+    const event = raw;
+    if (event.type === "goal/change") {
+      const data = event.data ?? {};
+      if (data.operation === "clear") {
+        objective = null;
+        continue;
+      }
+      const text2 = flattenText(data.goal?.objective);
+      if (text2 !== "") objective = text2;
+      continue;
+    }
+    if (firstHuman === null && isUserMessageEvent(event)) {
+      if (event.data.source?.kind !== "user") continue;
+      const blocks = Array.isArray(event.data.content) ? event.data.content : [];
+      const text2 = flattenText(blocks.filter(isTextBlock).map((block) => block.text).join(" "));
+      if (text2 === "" || GOAL_BOILERPLATE_RE.test(text2)) continue;
+      firstHuman = text2;
+    }
+    if (objective !== null && firstHuman !== null) break;
+  }
+  const text = objective ?? firstHuman;
+  if (text === null || text === "") return null;
+  return text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX - 1)}\u2026` : text;
 }
 
-export async function apply(ctx, config) {
-  const store = new TreeStore(config?.dataFile)
-  // Config normalisation. A published install must not depend on any local
-  // path: `git` resolves from PATH and the repository root falls back to the
-  // process cwd, so the plugin works with an empty config block. (Users who
-  // keep git outside PATH — e.g. a portable Windows install — can still set
-  // config.gitPath explicitly.)
-  const cfg = {
-    ...config,
-    gitPath: typeof config?.gitPath === 'string' && config.gitPath !== '' ? config.gitPath : 'git',
-    defaultRoot: typeof config?.defaultRoot === 'string' && config.defaultRoot !== '' ? config.defaultRoot : process.cwd(),
-  }
-
-  // Resolve the optional services the seeded-fork path needs. ctx.inject only
-  // fires once they exist, so the plugin still activates (and still forks, just
-  // without inherited history) on a host that lacks them.
-  if (typeof ctx.inject === 'function') {
-    ctx.inject(['sessionQuery', 'agents', 'agentDefaultModel'], (child) => {
-      optional.sessionQuery = child.sessionQuery
-      optional.agents = child.agents
-      optional.agentDefaultModel = child.agentDefaultModel
-      ctx.logger?.info?.('branchman: seeded-fork services resolved')
-    })
-    // Resolved separately: adding a fourth name to the group above would make
-    // the whole seeded-fork path hostage to a service that a future host may
-    // rename, and the direction still forks without it.
-    let backfilled = false
-    ctx.inject(['workspaceRegistry'], (child) => {
-      optional.workspaceRegistry = child.workspaceRegistry
-      ctx.logger?.info?.('branchman: workspaceRegistry resolved — directions get their own workspace group')
-      // Backfill lives here, not in apply: it must run once the registry really
-      // exists, or every existing direction is skipped with a false warning.
-      if (backfilled) return
-      backfilled = true
-      void backfillDirectionWorkspaces(ctx, store).catch(() => {})
-    })
-  }
-
-  // ── agent tools ──
-  const TOOL_OUTPUT = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
-  // p2-fix: wrap in defineTool (host-normalized schema) when available; fall
-  // back to raw registration only if the peer import failed (degrades like deja).
-  const tool = definition => {
-    if (defineTool === null) return ctx.tools.register(definition)
-    return ctx.tools.register(defineTool(definition))
-  }
-
-  // Every registration lives inside a ctx.effect that returns its cleanup, so
-  // unloading the plugin — or a profile patch replacing this row — removes the
-  // tools instead of leaving them behind on a dead context.
-  ctx.effect(() => {
-    const disposers = [
-  tool({
-      name: 'branch_fork',
-      description: 'Open a new engineering direction from the current conversation: creates a git worktree (isolated workspace on its own branch) and a child session bound to it, carrying this conversation\'s finished history. Use when the user wants to try an alternative approach without disturbing the main line. The main repo must have no uncommitted changes.',
-      parameters: {
-        name: { type: 'string', required: true, description: '走向名，如 走向A-激进方案。也是目录与分支名。' },
-        root: { type: 'string', description: '仓库根目录。默认取当前会话的工作目录。' },
-        from: { type: 'string', description: '起点 ref（默认 main）。也可以填 branchman/<已有走向>，等价于把那条走向整个克隆一条新的。' },
+// src/host/runtime.ts
+var loadPeer = async (name) => import(name);
+var inject = ["webServer", "sessions", "tools"];
+var schema;
+try {
+  const mod = await loadPeer("schemastery");
+  schema = mod.default ?? mod;
+} catch {
+}
+var Config = schema?.object({ dataFile: schema.string().default(""), defaultRoot: schema.string().default(""), gitPath: schema.string().default("git") });
+var BranchmanRuntime = class {
+  constructor(ctx, config, peers) {
+    this.ctx = ctx;
+    this.config = config;
+    this.peers = peers;
+    if (!config.dataFile) throw new Error("branchman: dataFile must be configured");
+    this.store = new StateStore(config.dataFile);
+    this.host = new HostAdapter({ sessions: ctx.sessions });
+    this.git = execGitRunner(config.gitPath ?? "git");
+    this.changes = new ChangeSnapshots(this.git, join3(dirname3(config.dataFile), "captures"));
+    this.operations = new OperationsEngine({
+      identify: (cwd) => this.identify(cwd),
+      captureChanges: async (op) => {
+        this.assertActive();
+        if (!this.services.workspaceRegistry || !this.services.agents || !this.services.agentPresets) throw new Error("required host services unavailable");
+        const boundary = await this.host.withObservation(op.request.sourceSessionId, async (observation) => {
+          if (!samePath(observation.header?.cwd ?? "", op.plan.sourcePath) && !isInside(op.plan.sourcePath, observation.header?.cwd ?? "")) throw new Error("source session cwd does not belong to the planned worktree");
+          const preset = await this.services.agentPresets.resolve(observation.projections?.values?.agentPreset ?? observation.header?.agentPreset);
+          if (!preset?.id || preset.broken) throw new Error("source agent preset unavailable or broken");
+          const model = this.services.agentDefaultModel?.currentSelection?.();
+          if (!model?.provider || !model?.model) throw new Error("default model selection unavailable");
+          return op.request.history === "inherit" ? forkBoundary(observation.events, op.request) : null;
+        });
+        const request = op.request;
+        if (request.codeSource.kind === "source-head" && request.codeSource.carryChanges) await this.changes.capture(op);
+        return { boundary };
       },
-      output: TOOL_OUTPUT,
-      execute: (args, exec) => {
-        // Fork from the conversation this call runs in: the source session and
-        // its cwd are what make the child inherit history and land in the right
-        // workspace group. An explicit argument still wins.
-        const caller = callerOf(exec)
-        return doFork(ctx, store, cfg, {
-          ...args,
-          currentSessionId: args?.currentSessionId ?? caller.sessionId ?? undefined,
-          sourceCwd: args?.sourceCwd ?? caller.cwd ?? undefined,
-        }).then(value => JSON.stringify(value, null, 2))
+      createWorktree: async (repoId, branch, path, base) => {
+        this.assertActive();
+        const root = this.repoRoot(repoId);
+        await this.git.run(["rev-parse", "--verify", `${base}^{commit}`], { cwd: root });
+        await this.git.run(["worktree", "add", "-b", branch, path, base], { cwd: root, timeoutMs: 6e4 });
       },
-    }),
-    tool({
-      name: 'branch_unarchive',
-      description: 'Take a direction out of the archive AND register its workspace in one step. Use when a direction is invisible in the sidebar: an archived session is filtered out of every workspace group, so unarchiving alone would only move it from "hidden" to the ungrouped bucket. Idempotent.',
-      parameters: { name: { type: 'string', required: true, description: '走向名。' } },
-      output: TOOL_OUTPUT,
-      execute: args => doUnarchive(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-    }),
-    tool({
-      name: 'branch_tree',
-      description: 'Show the branch tree of engineering directions: which direction forked from which, worktree paths, branches and activity. Zero cost — read from local state.',
-      parameters: {},
-      output: TOOL_OUTPUT,
-      execute: () => doTree(store).then(value => JSON.stringify(value, null, 2)),
-    }),
-    tool({
-      name: 'branch_status',
-      description: 'Per-direction git status vs the main line: commits ahead, behind, uncommitted files. Run before deciding to merge or drop a direction.',
-      parameters: { root: { type: 'string', description: '仓库根目录（默认配置值）。' } },
-      output: TOOL_OUTPUT,
-      execute: args => doStatus(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-    }),
-    tool({
-      name: 'branch_merge',
-      description: 'Merge a finished direction back into the main line. The direction must have no uncommitted changes in its worktree.',
-      parameters: { name: { type: 'string', required: true, description: '走向名。' } },
-      output: TOOL_OUTPUT,
-      execute: args => doMerge(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-    }),
-    tool({
-      name: 'branch_sync',
-      description: 'Absorb the main line into a direction (merge main → the direction worktree), the reverse of branch_merge. Use while a direction runs long and the main line has moved on. The direction must have no uncommitted changes.',
-      parameters: {
-        name: { type: 'string', required: true, description: '走向名。' },
-        from: { type: 'string', description: '要吸收的 ref（默认 main）。' },
-      },
-      output: TOOL_OUTPUT,
-      execute: args => doSync(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-    }),
-    tool({
-      name: 'branch_drop',
-      description: 'Tear down a direction: remove its worktree, delete its branch, mark it dropped in the tree (kept for audit).',
-      parameters: { name: { type: 'string', required: true, description: '走向名。' } },
-      output: TOOL_OUTPUT,
-      execute: args => doDrop(ctx, store, cfg, args).then(value => JSON.stringify(value, null, 2)),
-    }),
-    ]
+      carryChanges: async (_repo, _path, op) => this.changes.carry(op),
+      createChildSession: (input) => this.createChild(input),
+      attachWorkspace: (path, name, id) => this.attachWorkspace(path, name, id),
+      persistDirection: (input) => this.persistDirection(input),
+      removeWorktree: (repo, path, branch) => this.removeWorktree(repo, path, branch),
+      removeDirection: (_repo, id) => this.removeDirection(id),
+      directionRepo: async (id) => this.direction(id).repoId,
+      reconcile: (op) => this.reconcile(op)
+    }, void 0, { journalDirectory: join3(dirname3(config.dataFile), "operations") });
+  }
+  store;
+  host;
+  git;
+  changes;
+  operations;
+  services = {};
+  #writes = Promise.resolve();
+  #alive = true;
+  #treeFlight;
+  #titles = /* @__PURE__ */ new Map();
+  #previews = /* @__PURE__ */ new Map();
+  #generation = 0;
+  assertActive() {
+    if (!this.#alive) throw new Error("branchman runtime unloaded");
+  }
+  bind(name, value) {
+    this.assertActive();
+    this.services[name] = value;
+    this.#generation++;
+    const clear = ["sessionQuery", "agents", "workspaceRegistry", "agentDefaultModel"].includes(name) ? this.host.bind(name, value) : () => {
+    };
     return () => {
-      for (const dispose of disposers) {
-        try { if (typeof dispose === 'function') dispose() } catch { /* context already gone */ }
+      clear();
+      if (this.services[name] === value) {
+        delete this.services[name];
+        this.#generation++;
+      }
+    };
+  }
+  async ready() {
+    await this.store.ready();
+    await this.operations.ready();
+  }
+  async dispose() {
+    this.#alive = false;
+    this.#generation++;
+    await this.host.dispose();
+    this.#titles.clear();
+    this.#previews.clear();
+  }
+  async update(fn) {
+    const work = async () => {
+      this.assertActive();
+      const old = this.store.read(), next = structuredClone(old);
+      fn(next);
+      await this.store.commit(old.revision, next);
+    };
+    const queued = this.#writes.then(work, work);
+    this.#writes = queued.then(() => {
+    }, () => {
+    });
+    await queued;
+  }
+  repoRoot(id) {
+    const s = this.store.read(), repo = s.repositories.find((r) => r.id === id), tree = s.worktrees.find((w) => w.id === repo?.primaryWorktreeId);
+    if (!repo?.identityVerified || !tree) throw new Error("repository identity needs Git reconciliation");
+    return tree.canonicalPath;
+  }
+  direction(id) {
+    const d = this.store.read().directions.find((d2) => d2.id === id);
+    if (!d) throw new ApiValidationError("not-found", "directionId not found");
+    return d;
+  }
+  treePath(id) {
+    const w = this.store.read().worktrees.find((w2) => w2.id === id);
+    if (!w) throw new Error("worktree missing");
+    return w.canonicalPath;
+  }
+  async identify(cwd) {
+    this.assertActive();
+    const identity = await new GitAdapter(this.git, cwd).identify();
+    const porcelain = (await this.git.run(["worktree", "list", "--porcelain"], { cwd: identity.worktreePath })).stdout;
+    const paths2 = porcelain.split(/\r?\n\r?\n/).map((block) => {
+      const path = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] ?? null;
+      return path ? { path: normalizeWindowsPath(path), branch } : null;
+    }).filter(Boolean);
+    const primary = paths2[0];
+    if (!primary) throw new Error("git did not identify the primary worktree");
+    let repoId = "";
+    await this.update((s) => {
+      let repo = s.repositories.find((r) => samePath(r.canonicalCommonDir, identity.commonDir));
+      if (!repo) repo = s.repositories.find((r) => !r.identityVerified && paths2.some((p) => samePath(this.treePath(r.primaryWorktreeId), p.path)));
+      if (!repo) {
+        repo = { id: newId(), canonicalCommonDir: identity.commonDir, primaryWorktreeId: newId(), identityVerified: true };
+        s.repositories.push(repo);
+      }
+      repoId = repo.id;
+      repo.canonicalCommonDir = identity.commonDir;
+      repo.identityVerified = true;
+      for (const [i, path] of paths2.entries()) {
+        let w = s.worktrees.find((w2) => w2.repoId === repoId && samePath(w2.canonicalPath, path.path));
+        if (!w) {
+          const planned = this.operations.list().find((op) => op.plan && samePath(op.plan.worktreePath, path.path))?.plan;
+          w = { id: i === 0 ? repo.primaryWorktreeId : planned?.worktreeId ?? newId(), repoId, canonicalPath: path.path, branchRef: path.branch, managedBy: planned ? "branchman" : "external", present: true };
+          s.worktrees.push(w);
+        }
+        w.present = true;
+        if (w.managedBy === "external") w.branchRef = path.branch;
+        if (i === 0) repo.primaryWorktreeId = w.id;
+      }
+      for (const w of s.worktrees.filter((w2) => w2.repoId === repoId)) if (!paths2.some((p) => samePath(p.path, w.canonicalPath))) w.present = false;
+    });
+    return { repoId, ...identity, managedRoot: primary.path };
+  }
+  async source(id) {
+    const query = this.services.sessionQuery;
+    if (!query?.listSessions) throw new Error("sessionQuery unavailable");
+    const record = (await query.listSessions()).find((r) => r.header.id === id);
+    if (!record) throw new ApiValidationError("not-found", "source session not found");
+    return record;
+  }
+  async fork(body) {
+    const request = parseForkRequest(body);
+    if (request.codeSource.kind === "source-head" && this.operations.getByRequestId(request.requestId)) return this.operations.fork(request);
+    const source = await this.source(request.sourceSessionId);
+    if (!samePath(source.header.cwd ?? "", request.sourceCwd)) throw new ApiValidationError("invalid-source", "sourceCwd differs from the source session");
+    if (request.codeSource.kind === "explicit-commit") {
+      if (!/^[0-9a-f]{7,64}$/i.test(request.codeSource.oid)) throw new ApiValidationError("invalid-argument", "explicit commit must be an OID");
+      request.codeSource.oid = (await this.git.run(["rev-parse", "--verify", `${request.codeSource.oid}^{commit}`], { cwd: request.sourceCwd })).stdout.trim();
+    }
+    return this.operations.fork(request);
+  }
+  async createChild(input) {
+    this.assertActive();
+    const generation = this.#generation;
+    const id = `session-${input.operationId}`, agents = this.services.agents;
+    if (!agents?.create || !input.operationId) throw new Error("agent creation capability unavailable");
+    const existing = await this.services.sessionQuery.listSessions();
+    const found = existing.find((r) => r.header.id === id);
+    if (found) {
+      if (!samePath(found.header.cwd ?? "", input.worktreePath) || found.header.parentSession !== input.sourceSessionId) throw new Error("child identity conflict");
+      return { sessionId: id, seeded: !!found.header.isSeeded, inherited: this.operations.getOperation(input.operationId)?.child?.inherited ?? 0 };
+    }
+    return this.host.withObservation(input.sourceSessionId, async (observation) => {
+      const boundary = input.history === "inherit" ? forkBoundary(observation.events, input) : null;
+      const presetId = observation.projections?.values?.agentPreset ?? observation.header?.agentPreset;
+      const presets = this.services.agentPresets;
+      if (!presets?.resolve || !presets?.mount) throw new Error("source agent preset cannot be composed");
+      const resolved = await presets.resolve(presetId);
+      if (!resolved?.id || resolved.broken) throw new Error("source agent preset unavailable or broken");
+      const preset = resolved.id;
+      const composition = { agentPreset: preset, setup: async (agentCtx) => {
+        await presets.mount(agentCtx, preset);
+      } };
+      const selection = this.services.agentDefaultModel?.currentSelection?.();
+      if (!selection?.provider || !selection?.model) throw new Error("default model selection unavailable");
+      this.assertActive();
+      if (generation !== this.#generation) throw new Error("host bindings changed before child creation");
+      await agents.create({
+        sessionId: id,
+        ...boundary === null ? {} : { seed: this.peers.buildForkSeed(observation.events, boundary), inheritedEventCount: boundary + 1 },
+        meta: { cwd: input.worktreePath, parentSession: input.sourceSessionId, ...boundary === null ? {} : { isSeeded: true }, ...composition.agentPreset ? { agentPreset: composition.agentPreset } : {} },
+        agentOptions: { provider: selection.provider, model: selection.model },
+        ...composition.setup ? { setup: composition.setup } : {}
+      });
+      return { sessionId: id, seeded: boundary !== null, inherited: boundary === null ? 0 : boundary + 1, boundary };
+    });
+  }
+  async attachWorkspace(path, name, sessionId) {
+    this.assertActive();
+    const registry = this.services.workspaceRegistry;
+    if (!registry?.create) throw new Error("workspaceRegistry unavailable");
+    const workspace = await registry.create(path, `\u8D70\u5411 ${name}`);
+    if (!workspace?.id || !workspace.attachSession) throw new Error("workspace attachment unavailable");
+    if (sessionId) await workspace.attachSession(sessionId);
+    return { workspaceId: String(workspace.id) };
+  }
+  async persistDirection(input) {
+    const op = this.operations.getOperation(input.operationId);
+    await this.update((s) => {
+      if (s.directions.some((d) => d.id === input.directionId)) return;
+      const repo = s.repositories.find((r) => r.id === input.repoId);
+      const sourceTree = s.worktrees.find((w) => samePath(w.canonicalPath, op.plan.sourcePath) && w.repoId === input.repoId);
+      if (!s.worktrees.some((w) => w.id === input.worktreeId)) s.worktrees.push({ id: input.worktreeId, repoId: input.repoId, canonicalPath: normalizeWindowsPath(input.worktreePath), branchRef: input.branch, managedBy: "branchman", present: true });
+      for (const id of [input.sourceSessionId, input.primarySessionId]) if (id && !s.sessions.some((x) => x.sessionId === id)) s.sessions.push({ sessionId: id, worktreeId: id === input.primarySessionId ? input.worktreeId : sourceTree?.id ?? null, presence: "persisted", archived: false });
+      s.directions.push({
+        id: input.directionId,
+        repoId: input.repoId,
+        worktreeId: input.worktreeId,
+        displayName: input.displayName,
+        primarySessionId: input.primarySessionId,
+        baseOid: input.baseOid,
+        upstreamRef: sourceTree?.branchRef ?? null,
+        integrationTargetWorktreeId: sourceTree?.id ?? repo.primaryWorktreeId,
+        state: "ready",
+        brief: input.brief ?? "",
+        workspaceId: input.workspaceId ?? null,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      if (input.sourceSessionId && input.primarySessionId) s.forkEdges.push({
+        id: newId(),
+        sourceSessionId: input.sourceSessionId,
+        targetSessionId: input.primarySessionId,
+        boundarySeq: input.boundarySeq ?? null,
+        boundaryMessageId: input.messageId ?? null,
+        inheritedEventCount: input.inheritedEventCount ?? 0,
+        operationId: input.operationId ?? null
+      });
+    });
+  }
+  async reconcile(op) {
+    this.assertActive();
+    const p = op.plan;
+    await this.identify(p.sourcePath);
+    const root = this.repoRoot(p.repoId);
+    const list = (await this.git.run(["worktree", "list", "--porcelain"], { cwd: root })).stdout;
+    const block = list.split(/\r?\n\r?\n/).find((b) => samePath(/^worktree (.+)$/m.exec(b)?.[1] ?? "", p.worktreePath));
+    if (block) {
+      if (!block.includes(`branch refs/heads/${p.branch}`)) throw new Error("planned path belongs to another branch");
+      if (!op.ownedResources.includes(`worktree:${p.worktreePath}`)) op.ownedResources.push(`worktree:${p.worktreePath}`, `branch:${p.branch}`);
+    } else if (op.ownedResources.includes(`worktree:${p.worktreePath}`)) throw new Error("owned worktree is missing; manual recovery required");
+    const childId = `session-${op.id}`, corpus = await this.services.sessionQuery.listSessions();
+    const child = corpus.find((r) => r.header.id === childId);
+    if (child) {
+      if (!block || !samePath(child.header.cwd ?? "", p.worktreePath) || child.header.parentSession !== op.request.sourceSessionId) throw new Error("child/worktree reconciliation conflict");
+      if (op.request.history === "inherit" && op.child?.inherited === void 0 && op.resolvedBoundary == null) throw new Error("child inheritance boundary cannot be confirmed");
+      const inherited = op.child?.inherited ?? (op.resolvedBoundary != null ? op.resolvedBoundary + 1 : 0);
+      op.child = { sessionId: childId, seeded: !!child.header.isSeeded, inherited, boundary: inherited ? inherited - 1 : null };
+      if (!op.ownedResources.includes(`session:${childId}`)) op.ownedResources.push(`session:${childId}`);
+    }
+    if (this.store.read().directions.some((d) => d.id === p.directionId)) {
+      op.directionId = p.directionId;
+      op.state = "succeeded";
+      op.phase = "completed";
+      op.errorCode = null;
+    }
+    return op;
+  }
+  async clean(path) {
+    const dirty = (await this.git.run(["status", "--porcelain=v1", "--untracked-files=all", "--", ".", ":(exclude).branches"], { cwd: path })).stdout.trim();
+    if (dirty) throw new Error(`worktree contains uncommitted changes: ${path}`);
+  }
+  async removeWorktree(repoId, path, branch) {
+    const root = this.repoRoot(repoId), identity = await new GitAdapter(this.git, path).identify();
+    const repo = this.store.read().repositories.find((r) => r.id === repoId);
+    if (!samePath(identity.commonDir, repo.canonicalCommonDir) || identity.branchRef !== branch || samePath(path, root)) throw new Error("worktree ownership mismatch");
+    await this.clean(path);
+    const ahead = (await this.git.run(["rev-list", `${root === path ? "HEAD" : (await this.git.run(["rev-parse", "HEAD"], { cwd: root })).stdout.trim()}..${identity.headOid}`], { cwd: root })).stdout.trim();
+    if (ahead) throw new Error("worktree has commits not integrated into the primary worktree");
+    await this.git.run(["worktree", "remove", path], { cwd: root, timeoutMs: 6e4 });
+    await this.git.run(["branch", "-d", branch], { cwd: root });
+  }
+  async removeDirection(id) {
+    const d = this.direction(id);
+    if (d.state === "removed") return;
+    const expected = this.store.read().worktrees.find((w2) => w2.id === d.worktreeId);
+    const actual = await new GitAdapter(this.git, expected.canonicalPath).identify();
+    if (!samePath(actual.worktreePath, expected.canonicalPath) || actual.branchRef !== expected.branchRef) throw new Error("worktree ownership changed; removal refused");
+    await this.identify(expected.canonicalPath);
+    const w = this.store.read().worktrees.find((w2) => w2.id === d.worktreeId);
+    if (w.managedBy !== "branchman" || !w.branchRef) throw new Error("external worktrees cannot be removed");
+    await this.removeWorktree(d.repoId, w.canonicalPath, w.branchRef);
+    await this.update((s) => {
+      s.directions.find((x) => x.id === id).state = "removed";
+      s.worktrees.find((x) => x.id === d.worktreeId).present = false;
+    });
+  }
+  async integration(kind, requestId, id) {
+    const d = this.direction(id);
+    if (d.state !== "ready") throw new Error("direction needs reconciliation before integration");
+    const source = this.treePath(d.worktreeId), target = this.treePath(d.integrationTargetWorktreeId);
+    return this.operations.run(kind, requestId, { directionId: id }, d.repoId, async () => {
+      this.assertActive();
+      const state = this.store.read(), repo = state.repositories.find((r) => r.id === d.repoId);
+      if (!repo.identityVerified) throw new Error("repository identity needs Git reconciliation");
+      for (const worktreeId of [d.worktreeId, d.integrationTargetWorktreeId]) {
+        const expected = state.worktrees.find((w) => w.id === worktreeId);
+        const actual = await new GitAdapter(this.git, expected.canonicalPath).identify();
+        if (!samePath(actual.worktreePath, expected.canonicalPath) || !samePath(actual.commonDir, repo.canonicalCommonDir) || actual.branchRef !== expected.branchRef) throw new Error("integration worktree identity changed; reconcile before retry");
+      }
+      await this.clean(source);
+      await this.clean(target);
+      const path = kind === "merge" ? target : source, from = kind === "merge" ? source : target;
+      const oid = (await this.git.run(["rev-parse", "HEAD"], { cwd: from })).stdout.trim();
+      try {
+        await this.git.run(["merge", "--no-edit", oid], { cwd: path, timeoutMs: 6e4 });
+      } catch (e) {
+        const conflicts = (await this.git.run(["ls-files", "-u"], { cwd: path })).stdout.trim();
+        if (conflicts) await this.update((s) => {
+          s.directions.find((x) => x.id === id).state = "conflicted";
+        });
+        throw e;
+      }
+      await this.update((s) => {
+        const dir = s.directions.find((x) => x.id === id);
+        dir.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+        if (kind === "merge") dir.mergedAt = dir.updatedAt;
+      });
+    });
+  }
+  async unarchive(id) {
+    const d = this.direction(id);
+    if (!d.primarySessionId) throw new Error("direction has no session");
+    await this.attachWorkspace(this.treePath(d.worktreeId), d.displayName, d.primarySessionId);
+    await this.services.workspaceRegistry.unarchiveSession(d.primarySessionId);
+    return { directionId: id, sessionId: d.primarySessionId };
+  }
+  async checkDirection(id) {
+    const d = this.direction(id);
+    if (d.state === "removed") throw new Error("removed directions cannot be reactivated");
+    if (d.recoveryReasons?.length) throw new Error(`legacy references need repair: ${d.recoveryReasons.join("; ")}`);
+    const expected = this.store.read().worktrees.find((w) => w.id === d.worktreeId);
+    const identity = await new GitAdapter(this.git, expected.canonicalPath).identify();
+    if (!samePath(identity.worktreePath, expected.canonicalPath) || identity.branchRef !== expected.branchRef) throw new Error("direction worktree identity mismatch");
+    const resolved = await this.identify(expected.canonicalPath);
+    if (resolved.repoId !== d.repoId) throw new Error("legacy repository references need repair");
+    const parent = this.store.read().worktrees.find((w) => w.id === d.integrationTargetWorktreeId);
+    const parentIdentity = await new GitAdapter(this.git, parent.canonicalPath).identify();
+    if (!samePath(parentIdentity.commonDir, identity.commonDir) || !samePath(parentIdentity.worktreePath, parent.canonicalPath) || parentIdentity.branchRef !== parent.branchRef) throw new Error("parent worktree identity mismatch");
+    await this.clean(expected.canonicalPath);
+    await this.clean(parent.canonicalPath);
+    for (const path of [expected.canonicalPath, parent.canonicalPath]) {
+      const merging = (await this.git.run(["rev-parse", "--git-path", "MERGE_HEAD"], { cwd: path })).stdout.trim();
+      try {
+        await access(resolve2(path, merging));
+        throw new Error("unfinished Git merge requires completion or abort");
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
       }
     }
-  }, 'branchman: agent tools')
-
-  // ── passive tree projection (bounded: metadata only) ──
-  ctx.on('session/created', session => {
-    const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : null
-    const isBranchSession = cwd !== null && /(^|[\\/])\.branches[\\/]/.test(cwd)
-    const isBranchman = session?.header?.meta?.origin === 'branchman' || session?.header?.origin === 'branchman'
-    if (!isBranchSession && !isBranchman) return
-    const name = (cwd.split(/[\\/]/).at(-1) ?? '走向').slice(0, MAX_NAME)
-    store.mutate(() => store.upsert({
-      name, cwd, root: resolve(join(cwd, '..', '..')),
-      parentSessionId: session?.header?.parentSession ?? undefined,
-      sessionId: session.id, sessionTitle: session.title ?? null,
-    })).catch(() => {})
-    // Same accounting as branch_fork: a direction session created any other way
-    // (a manual worktree, a restored log) must land in its own workspace group
-    // rather than 未分组. Idempotent, so racing branch_fork's own call is free.
-    attachDirectionWorkspace(ctx, { worktree: cwd, name, childSessionId: session.id })
-      .then(result => { if (result.warning !== undefined) ctx.logger?.warn?.(`branchman: ${result.warning}`) })
-      .catch(() => {})
-  })
-
-  // A direction outlives its conversation. Deleting the session from the sidebar
-  // does not delete the worktree, the branch, or the commits in it — so the node
-  // stays, but it must stop claiming a conversation it no longer has, or the
-  // overview keeps offering to open a session that is gone and never says why.
-  //
-  // The flag is stored as the id it refers to (`disposedSessionId`), not as a
-  // boolean: a re-fork sets a new `sessionId`, and the stale flag then simply
-  // stops matching. Nothing has to remember to clear it.
-  ctx.on('session/disposed', session => {
-    const id = typeof session?.id === 'string' ? session.id : null
-    if (id === null) return
-    let hit = false
-    for (const node of store.state.nodes) {
-      if (node.sessionId !== id || node.disposedSessionId === id) continue
-      node.disposedSessionId = id
-      hit = true
-    }
-    if (hit) store.mutate(() => undefined).catch(() => {})
-  })
-
-  ctx.on('session/event', (session, event) => {
-    if (event?.type !== 'user/message' && event?.type !== 'assistant/message' && event?.type !== 'session/title') return
-    const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : null
-    if (cwd === null || !/(^|[\\/])\.branches[\\/]/.test(cwd)) return
-    const name = cwd.split(/[\\/]/).at(-1)
-    const node = store.state.nodes.find(item => item.name === name)
-    if (node === undefined) return
-    node.messageCount += 1
-    node.lastActivityAt = new Date().toISOString()
-    if (event.type === 'session/title' && typeof event.data?.title === 'string') node.sessionTitle = event.data.title.slice(0, 120)
-    store.mutate(() => undefined).catch(() => {})
-  })
-
-  // ── web endpoints ──
-  const trustedHosts = new Set(['localhost', '127.0.0.1'])
-  const hostOk = req => {
-    const host = typeof req.headers.host === 'string' ? req.headers.host.replace(/:\d+$/, '').toLowerCase() : ''
-    return trustedHosts.has(host)
+    await this.update((s) => {
+      const direction = s.directions.find((x) => x.id === id);
+      direction.state = "ready";
+      direction.upstreamRef = parent.branchRef;
+    });
+    return { directionId: id, state: "ready", baseOidKnown: !!d.baseOid };
   }
-  const sendJson = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)) }
-
-  ctx.effect(() => {
-    const disposeApi = ctx.webServer.register({
-      kind: 'prefix', path: '/branchman/api',
-      handler: async (req, res) => {
-        if (!hostOk(req)) return sendJson(res, 403, { error: 'forbidden' })
-        const path = new URL(req.url ?? '/', 'http://dsh.local').pathname
-        if (path === '/branchman/api/tree' && req.method === 'GET') return sendJson(res, 200, await doTree(store))
-        if (path === '/branchman/api/status' && req.method === 'GET') return sendJson(res, 200, await doStatus(ctx, store, cfg, {}))
-        if (path === '/branchman/api/fork' && req.method === 'POST') {
-          try {
-            const body = JSON.parse(await readBody(req))
-            const name = String(body?.name ?? '').trim()
-            if (!name) return sendJson(res, 400, { error: '走向名必填' })
-            const forkArgs = { name, root: body?.root }
-            if (typeof body?.sourceSessionId === 'string') forkArgs.currentSessionId = body.sourceSessionId
-            // The source conversation's own cwd lets the host derive the parent
-            // DIRECTION, so the rendered tree gets its edge.
-            if (typeof body?.sourceCwd === 'string') forkArgs.sourceCwd = body.sourceCwd
-            // The per-turn control only knows the message it sits under; the
-            // host turns that into the cut. Without it the child forks from the
-            // latest finished turn — the whole conversation, not that section.
-            if (typeof body?.messageId === 'string' && body.messageId !== '') forkArgs.messageId = body.messageId
-            if (Number.isSafeInteger(body?.boundarySeq)) forkArgs.boundarySeq = body.boundarySeq
-            // The host creates the child session itself (origin omitted, which
-            // validateSessionHeader accepts) and binds it to the worktree cwd.
-            // The client only opens what this route returns.
-            const result = await doFork(ctx, store, cfg, forkArgs)
-            return sendJson(res, 201, result)
-          } catch (error) {
-            return sendJson(res, 400, { error: error.message })
-          }
-        }
-        // The overview is a control surface, not a picture: merge, sync and drop
-        // are the three things a direction is ever waiting for, and sending the
-        // user back to chat to type a tool call is what made the old page
-        // read-only in practice.
-        if (path === '/branchman/api/merge' && req.method === 'POST') {
-          try {
-            const body = JSON.parse(await readBody(req))
-            return sendJson(res, 200, await doMerge(ctx, store, cfg, { name: body?.name }))
-          } catch (error) {
-            return sendJson(res, 400, { error: error.message })
-          }
-        }
-        if (path === '/branchman/api/sync' && req.method === 'POST') {
-          try {
-            const body = JSON.parse(await readBody(req))
-            return sendJson(res, 200, await doSync(ctx, store, cfg, { name: body?.name, from: body?.from }))
-          } catch (error) {
-            return sendJson(res, 400, { error: error.message })
-          }
-        }
-        if (path === '/branchman/api/drop' && req.method === 'POST') {
-          try {
-            const body = JSON.parse(await readBody(req))
-            return sendJson(res, 200, await doDrop(ctx, store, cfg, { name: body?.name }))
-          } catch (error) {
-            return sendJson(res, 400, { error: error.message })
-          }
-        }
-        // One click, both halves: registering the workspace AND unarchiving.
-        // Unarchiving alone would only move the session from "hidden" to 未分组.
-        if (path === '/branchman/api/unarchive' && req.method === 'POST') {
-          try {
-            const body = JSON.parse(await readBody(req))
-            return sendJson(res, 200, await doUnarchive(ctx, store, cfg, { name: body?.name }))
-          } catch (error) {
-            return sendJson(res, 400, { error: error.message })
-          }
-        }
-        if (path === '/branchman/api/bind' && req.method === 'POST') {
-          // p1-fix companion: the client created the session itself and
-          // reports the id here so the tree node carries a live link.
-          try {
-            const body = JSON.parse(await readBody(req))
-            const name = String(body?.name ?? '').trim()
-            const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
-            const node = store.state.nodes.find(item => item.name === name && item.status === 'open')
-            if (node === undefined) return sendJson(res, 404, { error: `没有进行中的走向「${name}」` })
-            if (sessionId === '') return sendJson(res, 400, { error: 'sessionId 必填' })
-            await store.mutate(() => store.upsert({
-              name, sessionId, sessionTitle: typeof body?.sessionTitle === 'string' ? body.sessionTitle : undefined,
-            }))
-            return sendJson(res, 200, { bound: name, sessionId })
-          } catch (error) {
-            return sendJson(res, 400, { error: error.message })
-          }
-        }
-        return sendJson(res, 404, { error: 'not found' })
-      },
-    })
-    const disposePage = ctx.webServer.register({
-      kind: 'exact', path: '/branchman/',
-      handler: (_req, res) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page()) },
-    })
-    return () => {
-      for (const dispose of [disposeApi, disposePage]) {
-        try { if (typeof dispose === 'function') dispose() } catch { /* context already gone */ }
+  tree(currentSessionId) {
+    if (this.#treeFlight) return this.#treeFlight;
+    const flight = this.readTree(currentSessionId).finally(() => {
+      if (this.#treeFlight === flight) this.#treeFlight = void 0;
+    });
+    this.#treeFlight = flight;
+    return flight;
+  }
+  async readTree(currentSessionId) {
+    this.assertActive();
+    const generation = this.#generation, s = this.store.read();
+    const query = this.services.sessionQuery;
+    let corpus = [], corpusError = null;
+    try {
+      if (!query?.listSessions) throw new Error("sessionQuery unavailable");
+      corpus = await query.listSessions();
+    } catch (e) {
+      corpusError = String(e.message);
+    }
+    const ids = /* @__PURE__ */ new Set([...s.sessions.map((x) => x.sessionId), ...corpus.map((x) => x.header.id), ...currentSessionId ? [currentSessionId] : []]);
+    const now = Date.now(), toRead = [...ids].filter((id) => id === currentSessionId || !this.#titles.has(id) || now - this.#titles.get(id).at > 6e4).sort((a, b) => Number(b === currentSessionId) - Number(a === currentSessionId)).slice(0, 64);
+    if (query?.readTitleSnapshots && toRead.length) {
+      try {
+        const titles = await query.readTitleSnapshots(toRead);
+        for (const t of titles) this.#titles.set(t.sessionId, { value: t.status === "fulfilled" ? t.value.title : void 0, at: now });
+      } catch {
+        for (const id of toRead) this.#titles.set(id, { value: void 0, at: now });
       }
     }
-  }, 'branchman: web routes')
-}
-
-function page() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Branchman — 工程走向树</title><style>
-body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:24px}
-h1{font-size:18px;font-weight:600;margin:0 0 4px}
-.sub{color:#8b8f98;font-size:12px;margin-bottom:20px}
-.node{border:1px solid #2a2e37;border-radius:10px;padding:10px 14px;max-width:520px;margin:10px 0;background:#161a22}
-.node .name{font-weight:600;font-size:14px}
-.node .meta{color:#8b8f98;font-size:11px;margin-top:4px;word-break:break-all}
-.node .stale{color:#b4686b;font-size:11px;margin-top:2px}
-.edge{border-left:1px dashed #3a3f4a;height:18px;margin-left:24px}
-.main{border-color:#3d6b54}
-.badge{display:inline-block;font-size:10px;border:1px solid #3a3f4a;border-radius:99px;padding:1px 8px;margin-left:8px;color:#8b8f98}
-</style></head><body><h1>Branchman · 工程走向树</h1><div class="sub">一个节点 = 一条走向（git worktree + 会话）。数据只含元数据，不含消息正文。</div><div id="tree">加载中…</div>
-<script>
-fetch('/branchman/api/tree').then(r=>r.json()).then(d=>{
-  const el=document.getElementById('tree');
-  if(!d.nodes.length){el.innerHTML='<div class="sub">还没有走向。在对话里让 agent 调 branch_fork 开第一条。</div>';return}
-  const byName={};d.nodes.forEach(n=>byName[n.name]=n);
-  const roots=d.nodes.filter(n=>!n.parentName||!byName[n.parentName]);
-  const kids=n=>d.nodes.filter(m=>m.parentName===n.name);
-  const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-  function render(n,depth){
-    const stale=(Date.now()-new Date(n.lastActivityAt))/864e5>3;
-    let html='<div class="node'+(depth===0?' main':'')+'">'
-      +'<div class="name">'+esc(n.name)+(depth===0?'<span class="badge">main 线</span>':'<span class="badge">'+esc(n.status)+'</span>')+'</div>'
-      +'<div class="meta">'+esc(n.cwd)+(n.sessionTitle?'<br>'+esc(n.sessionTitle):'')+'<br>消息 '+n.messageCount+' · 最后活动 '+new Date(n.lastActivityAt).toLocaleString()+'</div>'
-      +(stale?'<div class="stale">已 3 天无活动 — 考虑 merge 或 drop</div>':'')+'</div>';
-    kids(n).forEach(k=>{html+='<div class="edge"></div>';html+=render(k,depth+1)});
-    return html;
+    this.assertActive();
+    if (generation !== this.#generation) throw new Error("host services changed during tree read");
+    const archived = new Set(this.services.workspaceRegistry?.archivedSessionIds ?? []);
+    const corpusById = new Map(corpus.map((x) => [x.header.id, x])), linksById = new Map(s.sessions.map((x) => [x.sessionId, x])), directionsBySession = new Map(s.directions.map((d) => [d.primarySessionId, d]));
+    if (query?.observeSession) {
+      const missing = [...ids].filter((id) => {
+        const d = directionsBySession.get(id), title = this.#titles.get(id)?.value;
+        const label = selectLabel({ userTitle: title?.source?.kind === "user" ? title.title : null, hostTitle: title?.title, brief: d?.brief, summary: d?.summary, sessionId: id });
+        const cached = this.#previews.get(id);
+        return label?.source === "id" && (!cached || now - cached.at > 6e4) && corpusById.has(id);
+      }).sort((a, b) => Number(b === currentSessionId) - Number(a === currentSessionId)).slice(0, 2);
+      await Promise.all(missing.map(async (id) => {
+        try {
+          const text = await this.host.withObservation(id, (o) => derivePreview(o.events));
+          this.#previews.set(id, { text, at: now });
+        } catch {
+          this.#previews.set(id, { text: null, at: now });
+        }
+      }));
+      this.assertActive();
+      if (generation !== this.#generation) throw new Error("host services changed during preview read");
+    }
+    const sessions = [...ids].map((id) => {
+      const record = corpusById.get(id), link = linksById.get(id), direction = directionsBySession.get(id);
+      const title = this.#titles.get(id)?.value, live = this.ctx.sessions.get(id), cwd = record?.header.cwd ?? (link?.worktreeId ? this.treePath(link.worktreeId) : null);
+      const w = s.worktrees.find((w2) => w2.present !== false && cwd && samePath(w2.canonicalPath, cwd));
+      const label = selectLabel({
+        userTitle: title?.source?.kind === "user" ? title.title : null,
+        hostTitle: live?.title?.title ?? title?.title,
+        brief: direction?.brief,
+        summary: direction?.summary || this.#previews.get(id)?.text,
+        sessionId: id
+      });
+      return {
+        sessionId: id,
+        cwd,
+        repoId: w?.repoId ?? null,
+        worktreeId: w?.id ?? null,
+        directionId: direction?.id ?? null,
+        parentSessionId: record?.header.parentSession ?? s.forkEdges.find((e) => e.targetSessionId === id)?.sourceSessionId ?? null,
+        presence: live ? "live" : record ? "persisted" : corpusError ? "unknown" : "missing",
+        archived: archived.has(id),
+        label,
+        createdAt: record?.header.createdAt ?? null
+      };
+    });
+    return { ...s, sessions, operations: this.operations.summaries(), capabilities: this.host.capabilities(), corpusError };
   }
-  roots.forEach(r=>{el.innerHTML+=render(r,0)});
-}).catch(e=>{document.getElementById('tree').textContent='加载失败: '+e});
-</script></body></html>`
+  async status(id) {
+    const d = this.direction(id), cwd = this.treePath(d.worktreeId);
+    return {
+      directionId: id,
+      status: (await this.git.run(["status", "--short"], { cwd })).stdout,
+      branch: (await new GitAdapter(this.git, cwd).identify()).branchRef
+    };
+  }
+};
+async function migrateIfNeeded(dataFile) {
+  const legacy = dataFile.replace(/tree-v2\.json$/, "tree.json");
+  if (legacy === dataFile) return;
+  try {
+    await access(dataFile);
+    return;
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(await readFile4(legacy, "utf8"));
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+  const report = migrateV1(raw);
+  await mkdir4(dirname3(dataFile), { recursive: true });
+  await writeFile2(dataFile, JSON.stringify(report.state, null, 2), { flag: "wx" });
+  await writeFile2(join3(dirname3(dataFile), "migration-report.json"), JSON.stringify({ ...report, state: void 0 }, null, 2));
 }
-
-// host-plugin.md: a Host plugin exports `apply` and, when it needs services,
-// `inject` — declared, not assigned onto the function object. Services that are
-// optional at runtime are resolved separately through ctx.inject inside apply.
-export const inject = ['webServer', 'sessions', 'tools']
-
-// Exported for the offline suites: the store's write invariant (concurrent
-// saves must never collide on one temp path) is the one thing that cannot be
-// exercised through the tools alone, because it depends on two writers landing
-// in the same tick. The boundary resolver is exported for the same reason — it
-// decides how much history a child inherits, and a wrong cut is invisible in
-// the UI until the child has already been created.
-export { TreeStore, resolveMessageBoundary, latestCompletedPrefixBoundary }
-
+var localRequest = (req) => {
+  try {
+    const host = new URL(`http://${req.headers.host}`).hostname;
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(host)) return false;
+    if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return false;
+    return true;
+  } catch {
+    return false;
+  }
+};
+async function readBody(req) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    const raw = Buffer.from(chunk);
+    size += raw.length;
+    if (size > 64 * 1024) throw new ApiValidationError("body-too-large", "body exceeds 64KiB");
+    chunks.push(raw);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new ApiValidationError("invalid-json", "invalid JSON body");
+  }
+}
+function send(res, status, body) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.end(JSON.stringify(body));
+}
+async function apply(ctx, config) {
+  if (!config?.dataFile) throw new Error("branchman: dataFile must be configured");
+  const file = resolve2(config.dataFile.replace(/tree\.json$/, "tree-v2.json"));
+  await migrateIfNeeded(file);
+  const sessionPeer = await loadPeer("@deepseek-ai/dsh-session/fork");
+  const toolsPeer = await loadPeer("@deepseek-ai/dsh-tools");
+  const runtime = new BranchmanRuntime(ctx, { ...config, dataFile: file }, { buildForkSeed: sessionPeer.buildForkSeed, defineTool: toolsPeer.defineTool });
+  await runtime.ready();
+  ctx.effect(() => () => {
+    void runtime.dispose();
+  }, "branchman.runtime");
+  for (const service of ["sessionQuery", "agents", "agentDefaultModel", "workspaceRegistry", "agentPresets"]) {
+    const fiber = ctx.inject([service], (child) => {
+      const dispose = runtime.bind(service, child[service]);
+      child.effect(() => dispose, `branchman.${service}`);
+    });
+    ctx.effect(() => () => fiber?.dispose?.(), `branchman.optional.${service}`);
+  }
+  const action = async (path, body) => {
+    if (path === "fork") return runtime.fork(body);
+    if (path === "recover") {
+      if (typeof body.operationId !== "string") throw new ApiValidationError("invalid-argument", "operationId required");
+      return runtime.operations.recover(body.operationId);
+    }
+    if (typeof body.directionId !== "string") throw new ApiValidationError("invalid-argument", "directionId required");
+    if (path === "unarchive") return runtime.unarchive(body.directionId);
+    if (path === "check") return runtime.checkDirection(body.directionId);
+    if (typeof body.requestId !== "string" || !body.requestId.trim()) throw new ApiValidationError("invalid-argument", "requestId required");
+    if (path === "remove" || path === "drop") return runtime.operations.remove(body);
+    if (path === "merge" || path === "sync") return runtime.integration(path, body.requestId, body.directionId);
+    throw new ApiValidationError("not-found", "unknown endpoint");
+  };
+  ctx.effect(() => ctx.webServer.register({ kind: "prefix", path: "/branchman/api", handler: async (req, res) => {
+    if (!localRequest(req)) return send(res, 403, errorEnvelope(new ApiValidationError("forbidden", "request origin rejected")));
+    try {
+      const url = new URL(req.url, "http://localhost");
+      const path = url.pathname.split("/").at(-1);
+      let result;
+      if (req.method === "GET" && path === "tree") result = await runtime.tree(url.searchParams.get("currentSessionId") ?? void 0);
+      else if (req.method === "GET" && path === "status") result = await runtime.status(url.searchParams.get("directionId") ?? "");
+      else if (req.method === "GET" && path === "operations") result = runtime.operations.list();
+      else if (req.method === "POST") result = await action(path, await readBody(req));
+      else throw new ApiValidationError("not-found", "endpoint not found");
+      send(res, 200, ok(result, runtime.store.read().revision));
+    } catch (e) {
+      send(res, e instanceof IdempotencyConflictError ? 409 : e instanceof ApiValidationError ? e.code === "not-found" ? 404 : 400 : 500, errorEnvelope(e));
+    }
+  } }), "branchman.api");
+  ctx.effect(() => {
+    const disposers = [];
+    for (const name of ["fork", "tree", "status", "merge", "sync", "drop", "unarchive", "recover", "check"]) {
+      const definition = {
+        name: `branch_${name}`,
+        description: name === "fork" ? "Create an isolated Git worktree and child session from the current conversation. Explicitly select inherit or blank history. Returns a durable operation status; recovery-required is not success." : `Branchman ${name}: operates on stable directionId/operationId and returns actual operation state.`,
+        parameters: name === "tree" ? {} : name === "fork" ? {
+          displayName: { type: "string", required: true },
+          brief: { type: "string" },
+          history: { type: "string", enum: ["inherit", "blank"] },
+          carryChanges: { type: "boolean" },
+          requestId: { type: "string" },
+          messageId: { type: "string" },
+          boundarySeq: { type: "number" }
+        } : name === "recover" ? { operationId: { type: "string", required: true } } : { directionId: { type: "string", required: true }, requestId: { type: "string" } },
+        output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
+        execute: async (args, exec) => {
+          const session = exec?.agent?.session, sessionId = exec?.agent?.sessionId ?? session?.id;
+          const body = { ...args, requestId: args?.requestId ?? `tool-${exec?.id ?? randomUUID2()}` };
+          let result;
+          if (name === "tree") result = await runtime.tree(sessionId);
+          else if (name === "status") result = await runtime.status(body.directionId);
+          else if (name === "fork") result = await runtime.fork({
+            ...body,
+            sourceSessionId: sessionId,
+            sourceCwd: session?.header?.cwd,
+            codeSource: { kind: "source-head", carryChanges: args?.carryChanges !== false },
+            history: args?.history ?? "inherit"
+          });
+          else result = await action(name, body);
+          return JSON.stringify(ok(result, runtime.store.read().revision));
+        }
+      };
+      disposers.push(ctx.tools.register(toolsPeer.defineTool(definition)));
+    }
+    return () => disposers.forEach((d) => d?.());
+  }, "branchman.tools");
+}
+export {
+  BranchmanRuntime,
+  Config,
+  apply,
+  inject
+};

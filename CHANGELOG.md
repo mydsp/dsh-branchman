@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-10-02 接手实现
+
+- 新宿主 Runtime 与 React 客户端已构建到实际包入口，连接官方桌面服务。
+- 使用真实 Git common-dir、工作树 UUID、精确继承边界、文件字节快照与持久化恢复日志。
+- 防止外部分支切换导致错误合入或移除；冲突和未知宿主副作用保留现场。
+- v1 迁移保留旧文件与历史字段；列表包含没有走向的会话，图形相机不随刷新重置。
+- CLI 改走版本化 API；发布脚本读取真实 tar 文件名并支持 ValidateOnly。
+- 真实候选桌面验收与单测分别记录。正式 profile 尚未切换，发布状态保持 pending-validation。
+
+下方 Unreleased 内容为接手前记录，不代表当前入口状态。
+
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

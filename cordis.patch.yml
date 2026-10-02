@@ -4,12 +4,10 @@
 # `dsh.profile.bundles`. `dataFile` lands under $DSH_HOME so tree metadata
 # survives restarts.
 #
-# Optional config keys (both have portable defaults — omit them unless needed):
-#   defaultRoot: repository root used when a tool call omits `root`
-#                (default: the process cwd)
-#   gitPath:     git executable (default: "git", resolved from PATH)
+# Repository identity comes from the source session and Git common-dir.
+# Optional gitPath overrides the Git executable (default: PATH's git).
 - insert:
     - id: branchman
       name: dsh-branchman
       config:
-        dataFile: !!js dshHomePath('branchman/tree.json')
+        dataFile: !!js dshHomePath('branchman/tree-v2.json')
