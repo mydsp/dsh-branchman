@@ -122,6 +122,106 @@
     return onCycle;
   }
 
+  // src/client/forest.ts
+  function buildForest(rows) {
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const graph = buildGraph(
+      rows.map((r) => ({ id: r.id, kind: r.directionId ? "direction" : "session" })),
+      rows.filter((r) => r.parentSessionId && byId.has(r.parentSessionId)).map((r) => ({ id: `edge:${r.id}`, sourceId: r.parentSessionId, targetId: r.id }))
+    );
+    const cyclic = new Set(graph.issues.filter((i) => i.code === "cycle").flatMap((i) => i.ids));
+    const parent = /* @__PURE__ */ new Map(), children = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const candidate = row.parentSessionId ? byId.get(row.parentSessionId) : void 0;
+      const crossRepo = candidate?.repoId && row.repoId && candidate.repoId !== row.repoId;
+      parent.set(row.id, candidate && !crossRepo && !cyclic.has(row.id) ? candidate.id : null);
+      children.set(row.id, []);
+    }
+    for (const [id, p] of parent) if (p) children.get(p).push(id);
+    const compare = (a, b) => (byId.get(a)?.createdAt ?? 0) - (byId.get(b)?.createdAt ?? 0) || a.localeCompare(b);
+    for (const ids of children.values()) ids.sort(compare);
+    const roots = rows.filter((r) => !parent.get(r.id)).map((r) => r.id).sort((a, b) => {
+      const ra = byId.get(a), rb = byId.get(b);
+      return String(ra.repoId ?? ra.cwd ?? "").localeCompare(String(rb.repoId ?? rb.cwd ?? "")) || compare(a, b);
+    });
+    const ordered = [], depth = /* @__PURE__ */ new Map(), rootOf = /* @__PURE__ */ new Map();
+    for (const root of roots) {
+      const stack = [{ id: root, level: 0 }];
+      while (stack.length) {
+        const item = stack.pop();
+        ordered.push(byId.get(item.id));
+        depth.set(item.id, item.level);
+        rootOf.set(item.id, root);
+        for (const id of [...children.get(item.id)].reverse()) stack.push({ id, level: item.level + 1 });
+      }
+    }
+    return {
+      byId,
+      parent,
+      children,
+      roots,
+      ordered,
+      depth,
+      rootOf,
+      graph: { ...graph, edges: graph.edges.filter((e) => parent.get(e.targetId) === e.sourceId) }
+    };
+  }
+  function selectForestRows(forest, matches, limit, collapsed = /* @__PURE__ */ new Set(), reveal = false) {
+    const included = /* @__PURE__ */ new Set();
+    for (const row of matches.slice(0, limit)) {
+      let id = row.id;
+      while (id && !included.has(id)) {
+        included.add(id);
+        id = forest.parent.get(id) ?? null;
+      }
+    }
+    return forest.ordered.filter((row) => {
+      if (!included.has(row.id)) return false;
+      if (reveal) return true;
+      let p = forest.parent.get(row.id);
+      while (p) {
+        if (collapsed.has(p)) return false;
+        p = forest.parent.get(p);
+      }
+      return true;
+    });
+  }
+  function layoutRows(rows) {
+    const forest = buildForest(rows), positions = /* @__PURE__ */ new Map();
+    const groups = [];
+    const spans = /* @__PURE__ */ new Map();
+    for (const row of [...forest.ordered].reverse()) spans.set(row.id, Math.max(1, forest.children.get(row.id).reduce((sum, id) => sum + spans.get(id), 0)));
+    for (const rootId of forest.roots) {
+      const ids = forest.ordered.filter((r) => forest.rootOf.get(r.id) === rootId).map((r) => r.id);
+      const maxDepth = Math.max(0, ...ids.map((id) => forest.depth.get(id)));
+      groups.push({ rootId, ids, x: 0, y: 0, width: maxDepth * 312 + 300, height: spans.get(rootId) * 88 + 58 });
+    }
+    const shelfWidth = Math.max(960, ...groups.map((g) => g.width));
+    let x = 18, y = 18, shelfHeight = 0;
+    for (const group of groups) {
+      if (x > 18 && x + group.width > shelfWidth + 18) {
+        x = 18;
+        y += shelfHeight + 26;
+        shelfHeight = 0;
+      }
+      group.x = x;
+      group.y = y;
+      x += group.width + 24;
+      shelfHeight = Math.max(shelfHeight, group.height);
+      const stack = [{ id: group.rootId, start: 0 }];
+      while (stack.length) {
+        const { id, start } = stack.pop();
+        positions.set(id, { x: group.x + 18 + forest.depth.get(id) * 312, y: group.y + 44 + (start + (spans.get(id) - 1) / 2) * 88 });
+        let next = start;
+        for (const child of forest.children.get(id)) {
+          stack.push({ id: child, start: next });
+          next += spans.get(child);
+        }
+      }
+    }
+    return { ...forest, positions, groups, width: Math.max(320, ...groups.map((g) => g.x + g.width + 18)), height: Math.max(120, y + shelfHeight + 18) };
+  }
+
   // src/client/session-store.ts
   var BOILERPLATE_TITLE_RE = /^\s*reference attachments for (?:the )?goal objective\.?(?:\s*\(\d+\))?\s*$/i;
   var clean = (value) => {
@@ -149,6 +249,15 @@
   }
 
   // src/client/entry.ts
+  var shortText = (text, budget = 34) => {
+    let out = "", width = 0;
+    for (const ch of text) {
+      width += ch.charCodeAt(0) > 127 ? 2 : 1;
+      if (width > budget) return out + "\u2026";
+      out += ch;
+    }
+    return out;
+  };
   function overviewRows(data, catalogue = {}) {
     const directions = new Map(data.directions.map((d) => [d.id, d]));
     const rows = data.sessions.map((s) => {
@@ -166,7 +275,8 @@
         sessionId: s.sessionId,
         directionId: d?.id ?? null,
         parentSessionId: s.parentSessionId,
-        repoId: s.repoId,
+        repoId: s.repoId ?? d?.repoId ?? null,
+        createdAt: s.createdAt,
         label: label?.text ?? s.sessionId,
         cwd: s.cwd,
         archived: s.archived,
@@ -191,26 +301,6 @@
       brief: d.brief ?? ""
     });
     return rows;
-  }
-  function layoutRows(rows) {
-    const ids = new Set(rows.map((r) => r.id));
-    const graph = buildGraph(
-      rows.map((r) => ({ id: r.id, kind: r.directionId ? "direction" : "session" })),
-      rows.filter((r) => r.parentSessionId && ids.has(r.parentSessionId)).map((r) => ({ id: `edge:${r.id}`, sourceId: r.parentSessionId, targetId: r.id }))
-    );
-    const cyclic = new Set(graph.issues.filter((i) => i.code === "cycle").flatMap((i) => i.ids)), byId = new Map(rows.map((r) => [r.id, r]));
-    const depths = /* @__PURE__ */ new Map();
-    for (const row of rows) {
-      let current = row, depth = 0, seen = /* @__PURE__ */ new Set();
-      while (current.parentSessionId && byId.has(current.parentSessionId) && !cyclic.has(current.id) && !seen.has(current.id)) {
-        seen.add(current.id);
-        depth++;
-        current = byId.get(current.parentSessionId);
-      }
-      depths.set(row.id, Math.min(depth, 12));
-    }
-    const positions = new Map(rows.map((r, i) => [r.id, { x: (depths.get(r.id) ?? 0) * 300 + 18, y: i * 90 + 18 }]));
-    return { positions, graph, width: Math.max(320, ...[...positions.values()].map((p) => p.x + 278)), height: Math.max(120, rows.length * 90 + 18) };
   }
   var zh = {
     title: "\u8D70\u5411\u603B\u89C8",
@@ -259,7 +349,26 @@
     show: "\u5DF2\u663E\u793A",
     total: "\u603B\u8BA1",
     revision: "\u7248\u672C",
-    confirmation: "\u786E\u8BA4\u6267\u884C"
+    confirmation: "\u786E\u8BA4\u6267\u884C",
+    roots: "\u5168\u90E8\u4E3B\u6811",
+    root: "\u4E3B\u6811",
+    branch: "\u5206\u652F",
+    conversations: "\u4F1A\u8BDD",
+    collapse: "\u6536\u8D77\u5206\u652F",
+    expand: "\u5C55\u5F00\u5206\u652F",
+    expandAll: "\u5C55\u5F00\u5168\u90E8",
+    collapseAll: "\u6536\u8D77\u5168\u90E8",
+    parent: "\u7236\u4F1A\u8BDD",
+    location: "\u6240\u5C5E\u4E3B\u6811",
+    focus: "\u5B9A\u4F4D\u9009\u4E2D",
+    graphHelp: "\u4E3B\u6811\u72EC\u7ACB\u5206\u533A \xB7 \u62D6\u52A8\u753B\u5E03\u67E5\u770B \xB7 \u53EF\u7B5B\u9009\u5355\u68F5\u4E3B\u6811",
+    session: "\u666E\u901A\u4F1A\u8BDD",
+    ready: "\u53EF\u7528",
+    removed: "\u5DF2\u79FB\u9664",
+    creatingState: "\u6B63\u5728\u521B\u5EFA",
+    "recovery-required": "\u9700\u8981\u6062\u590D",
+    conflicted: "\u5B58\u5728\u51B2\u7A81",
+    missingParent: "\u539F\u7236\u4F1A\u8BDD\u5DF2\u5220\u9664\u6216\u4E0D\u53EF\u7528"
   };
   var en = {
     title: "Directions",
@@ -308,9 +417,30 @@
     show: "Showing",
     total: "Total",
     revision: "Revision",
-    confirmation: "Confirm action"
+    confirmation: "Confirm action",
+    roots: "All main trees",
+    root: "Main tree",
+    branch: "Branch",
+    conversations: "conversations",
+    collapse: "Collapse branches",
+    expand: "Expand branches",
+    expandAll: "Expand all",
+    collapseAll: "Collapse all",
+    parent: "Parent conversation",
+    location: "Main tree",
+    focus: "Focus selected",
+    graphHelp: "Separate main trees \xB7 Drag to pan \xB7 Select one main tree to focus",
+    session: "Conversation",
+    ready: "Ready",
+    removed: "Removed",
+    creatingState: "Creating",
+    "recovery-required": "Recovery required",
+    conflicted: "Conflicted",
+    missingParent: "Original parent deleted or unavailable"
   };
   var CSS = `
+.bm-toolbar select{width:185px;max-width:100%;min-width:0}.bm-toolbar input{min-width:180px}.bm-graph-help{position:absolute;top:8px;left:10px;right:10px;pointer-events:none;font-size:12px;opacity:.65;background:var(--dsw-alias-bg-module-platform,#f5f6f7);padding:4px 7px;border-radius:5px}
+.bm-tree-group{border:1px solid var(--dsw-alias-border-l3,#8885);border-radius:10px;margin-bottom:14px;padding:8px;background:var(--dsw-alias-bg-layer-1,#fff)}.bm-group-head{padding:3px 6px 8px;display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #8883;margin-bottom:7px}.bm-tree-item{display:flex;align-items:stretch;gap:5px;position:relative;margin-left:calc(var(--bm-depth,0)*22px)}.bm-tree-item[data-depth]:not([data-depth="0"]){border-left:2px solid #4285cf44;padding-left:6px}.bm-tree-item .bm-row{min-width:0;flex:1}.bm-tree-item .bm-toggle{width:25px;padding:0;flex:none;border:0;background:transparent;align-self:flex-start;height:35px}.bm-tree-item .bm-leaf{width:25px;flex:none;text-align:center;padding-top:8px;color:#4285cf}.bm-root-row .bm-label{font-size:14px}.bm-root-row{border-left:3px solid #4285cf!important}.bm-detail-path{padding:9px;border-radius:8px;background:#8080800b;border:1px solid #8883;display:flex;flex-direction:column;gap:5px}.bm-detail-path button{text-align:left;font-size:12px}.bm-canvas .bm-tree-card{fill:var(--dsw-alias-bg-module-platform,#80808007);stroke:#4285cf55;stroke-width:1}.bm-canvas .bm-edge{stroke:#4285cf88;stroke-width:1.6}.bm-canvas .bm-tree-caption{font-weight:600}.bm-canvas .bm-node-kind{fill:#4285cf}.bm-canvas .bm-graph-toggle{fill:#4285cf;cursor:pointer}
 .bm-backdrop{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.32);display:grid;place-items:center;padding:18px;box-sizing:border-box}.bm-panel{box-sizing:border-box;max-width:100%}
 .bm-panel{width:min(1120px,96vw);height:min(780px,94vh);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--dsw-alias-border-l3,#8888);border-radius:14px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#202124);box-shadow:0 18px 70px #0004;font:14px/1.5 system-ui}
 .bm-head,.bm-toolbar,.bm-foot{padding:12px 18px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--dsw-alias-border-l3,#8886)}
@@ -466,7 +596,7 @@
         h("footer", { className: "bm-foot" }, h("button", { type: "submit", disabled: busy || !source?.cwd || !name.trim() || !!operation }, busy ? tx("creating") : tx("create")))
       ));
     }
-    function Graph({ rows, selected, select }) {
+    function Graph({ rows, selected, select, forest, collapsed, toggle }) {
       const layout = React.useMemo(() => layoutRows(rows), [rows]);
       const [element, setElement] = React.useState(null), [size, setSize] = React.useState({ w: 800, h: 400 }), [camera, setCamera] = React.useState({ x: 10, y: 10, k: 1 });
       const cam = React.useRef(camera), drag = React.useRef(null), initialized = React.useRef(false);
@@ -474,6 +604,13 @@
       const doFit = () => {
         setCamera(fit(layout.width, layout.height, size.w, size.h));
         initialized.current = true;
+      };
+      const focusSelected = () => {
+        const p = layout.positions.get(selected);
+        if (p) {
+          setCamera({ k: 1, x: size.w / 2 - p.x - 132, y: size.h / 2 - p.y - 34 });
+          initialized.current = true;
+        }
       };
       React.useEffect(() => {
         if (!element) return;
@@ -496,7 +633,11 @@
         };
       }, [element]);
       React.useEffect(() => {
-        if (!initialized.current && rows.length && size.w > 0 && size.h > 0) doFit();
+        if (!initialized.current && rows.length && size.w > 0 && size.h > 0) {
+          const fitted = fit(layout.width, layout.height, size.w, size.h);
+          setCamera(fitted.k >= 0.72 ? fitted : { k: 0.72, x: 12, y: 38 });
+          initialized.current = true;
+        }
       }, [rows.length, size.w, size.h]);
       const down = (e) => {
         if (e.button !== 0 || e.target.closest('[role="button"]')) return;
@@ -540,39 +681,60 @@
         h("svg", { viewBox: `0 0 ${size.w} ${size.h}`, "data-camera": JSON.stringify(camera) }, h(
           "g",
           { transform: `translate(${camera.x} ${camera.y}) scale(${camera.k})` },
+          layout.groups.map((group) => h("g", { key: `group:${group.rootId}`, "data-tree-root": group.rootId }, h("rect", { className: "bm-tree-card", x: group.x, y: group.y, width: group.width, height: group.height, rx: 12 }), h("text", { className: "bm-tree-caption", x: group.x + 16, y: group.y + 25, fontSize: 12 }, `${tx("root")} \xB7 ${shortText(layout.byId.get(group.rootId)?.label ?? "", 30)} \xB7 ${group.ids.length}`))),
           layout.graph.edges.map((edge) => {
             const a = layout.positions.get(edge.sourceId), b = layout.positions.get(edge.targetId);
-            return h("path", { key: edge.id, d: `M${a.x + 264} ${a.y + 32} C${a.x + 290} ${a.y + 32},${b.x - 24} ${b.y + 32},${b.x} ${b.y + 32}` });
+            return h("path", { key: edge.id, className: "bm-edge", "data-tree-root": layout.rootOf.get(edge.sourceId), d: `M${a.x + 264} ${a.y + 34} C${a.x + 288} ${a.y + 34},${b.x - 24} ${b.y + 34},${b.x} ${b.y + 34}` });
           }),
           rows.map((row) => {
-            const p = layout.positions.get(row.id);
+            const p = layout.positions.get(row.id), hasChildren = forest.children.get(row.id)?.length > 0;
             return h(
               "g",
-              { key: row.id, role: "button", tabIndex: 0, "aria-label": row.label, "aria-selected": row.id === selected, transform: `translate(${p.x} ${p.y})`, onClick: () => select(row.id), onKeyDown: (e) => {
+              { key: row.id, role: "button", tabIndex: 0, "aria-label": row.label, "aria-selected": row.id === selected, "data-session-id": row.id, transform: `translate(${p.x} ${p.y})`, onClick: () => select(row.id), onKeyDown: (e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   e.stopPropagation();
                   select(row.id);
                 }
               } },
+              h("title", null, `${row.label}
+${row.cwd ?? ""}`),
               h("rect", { width: 264, height: 68, rx: 9 }),
-              h("text", { x: 12, y: 25, fontSize: 13 }, row.label.slice(0, 28)),
-              h("text", { x: 12, y: 48, fontSize: 11, opacity: 0.7 }, `${row.displayName || row.state}${row.archived ? ` \xB7 ${tx("archived")}` : ""}`)
+              h("text", { x: 12, y: 24, fontSize: 13 }, shortText(row.label)),
+              h("text", { x: 12, y: 49, fontSize: 11, opacity: 0.7 }, shortText(`${forest.depth.get(row.id) ? tx("branch") : tx("root")} \xB7 ${row.displayName || tx(row.state)}${row.archived ? ` \xB7 ${tx("archived")}` : ""}`)),
+              hasChildren && h("g", { role: "button", tabIndex: 0, className: "bm-graph-toggle", "aria-label": `${tx(collapsed.has(row.id) ? "expand" : "collapse")} ${row.label}`, "aria-expanded": !collapsed.has(row.id), onClick: (e) => {
+                e.stopPropagation();
+                toggle(row.id);
+              }, onKeyDown: (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  toggle(row.id);
+                }
+              } }, h("rect", { x: 237, y: 37, width: 22, height: 24, rx: 4 }), h("text", { x: 243, y: 53, fontSize: 14 }, collapsed.has(row.id) ? "+" : "\u2212"))
             );
           })
         )),
+        h("div", { className: "bm-graph-help" }, tx("graphHelp")),
         h(
           "div",
           { style: { position: "absolute", bottom: 10, left: 10, display: "flex", gap: 6 } },
           h("button", { onClick: () => setCamera(zoomAt(cam.current, 1.2, size.w / 2, size.h / 2)), "aria-label": tx("zoomIn") }, "+"),
           h("button", { onClick: () => setCamera(zoomAt(cam.current, 1 / 1.2, size.w / 2, size.h / 2)), "aria-label": tx("zoomOut") }, "\u2212"),
-          h("button", { onClick: doFit }, tx("fit"))
+          h("button", { onClick: doFit }, tx("fit")),
+          h("button", { onClick: focusSelected, disabled: !layout.positions.has(selected) }, tx("focus"))
         )
       );
     }
     function Overview({ props }) {
       const catalogue = useCatalogue(), current = props?.sessionId ?? catalogue.current;
       const [data, setData] = React.useState(null), [error, setError] = React.useState(""), [mode, setMode] = React.useState("list"), [search, setSearch] = React.useState(""), [repo, setRepo] = React.useState(""), [limit, setLimit] = React.useState(80), [selected, setSelected] = React.useState(current), [busy, setBusy] = React.useState(false), [confirm, setConfirm] = React.useState(null);
+      const [root, setRoot] = React.useState(""), [collapsed, setCollapsed] = React.useState(/* @__PURE__ */ new Set()), [showDetails, setShowDetails] = React.useState(false);
+      const toggle = (id) => setCollapsed((before) => {
+        const next = new Set(before);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
       const alive = React.useRef(true), controller = React.useRef(null), revision = React.useRef(-1), flight = React.useRef(null);
       const load = () => {
         if (flight.current) return flight.current;
@@ -605,9 +767,10 @@
         };
       }, [current]);
       const rows = React.useMemo(() => data ? overviewRows(data, catalogue) : [], [data, catalogue]);
-      const matching = rows.filter((r) => (!repo || r.repoId === repo) && `${r.label} ${r.displayName} ${r.cwd} ${r.brief}`.toLowerCase().includes(search.toLowerCase()));
-      const ordered = [...matching].sort((a, b) => Number(b.id === current) - Number(a.id === current));
-      const visible = ordered.slice(0, limit), row = rows.find((r) => r.id === selected);
+      const forest = React.useMemo(() => buildForest(rows), [rows]);
+      const matching = forest.ordered.filter((r) => (!repo || r.repoId === repo || forest.byId.get(forest.rootOf.get(r.id))?.repoId === repo) && (!root || forest.rootOf.get(r.id) === root) && `${r.label} ${r.displayName} ${r.cwd} ${r.brief}`.toLowerCase().includes(search.toLowerCase()));
+      const visible = selectForestRows(forest, matching, limit, collapsed, !!search), row = rows.find((r) => r.id === selected);
+      const visibleForest = buildForest(visible), rootRow = row && forest.byId.get(forest.rootOf.get(row.id)), parentRow = row && forest.byId.get(forest.parent.get(row.id));
       const doAction = async (kind, id) => {
         setBusy(true);
         setError("");
@@ -637,34 +800,59 @@
           } }),
           h("select", { value: repo, "aria-label": tx("all"), onChange: (e) => {
             setRepo(e.target.value);
+            setRoot("");
             setLimit(80);
           } }, h("option", { value: "" }, tx("all")), ...(data?.repositories ?? []).map((r) => h("option", { value: r.id, key: r.id }, data.worktrees.find((w) => w.id === r.primaryWorktreeId)?.canonicalPath))),
-          ...["list", "graph"].map((kind) => h("button", { key: kind, "aria-pressed": mode === kind, onClick: () => setMode(kind) }, tx(kind)))
+          h("select", { value: root, "aria-label": tx("roots"), onChange: (e) => {
+            setRoot(e.target.value);
+            setLimit(80);
+          } }, h("option", { value: "" }, tx("roots")), ...forest.roots.filter((id) => !repo || forest.byId.get(id)?.repoId === repo).map((id) => h("option", { key: id, value: id }, forest.byId.get(id)?.label))),
+          ...["list", "graph"].map((kind) => h("button", { key: kind, "aria-pressed": mode === kind, onClick: () => setMode(kind) }, tx(kind))),
+          h("button", { onClick: () => setCollapsed(new Set(forest.ordered.filter((r) => forest.children.get(r.id).length).map((r) => r.id))) }, tx("collapseAll")),
+          h("button", { onClick: () => setCollapsed(/* @__PURE__ */ new Set()) }, tx("expandAll")),
+          mode === "graph" && h("button", { "aria-pressed": showDetails, onClick: () => setShowDetails(!showDetails) }, tx("details"))
         ),
         error && h("div", { className: "bm-error", role: "alert" }, error),
         h(
           "div",
           { className: "bm-body" },
-          mode === "graph" ? h(Graph, { rows: visible, selected, select: setSelected }) : h(
+          mode === "graph" ? h(Graph, { key: root || "all", rows: visible, selected, select: setSelected, forest, collapsed, toggle }) : h(
             "div",
-            { className: "bm-list", role: "listbox", "aria-label": tx("title") },
-            !data ? tx("loading") : !matching.length ? tx("empty") : visible.map((r) => h(
-              "button",
-              { key: r.id, className: "bm-row", role: "option", "aria-selected": selected === r.id, onClick: () => setSelected(r.id) },
-              h("span", { className: "bm-line" }, h("strong", { className: "bm-label" }, r.label), r.id === current && h("span", { className: "bm-chip" }, tx("current")), r.archived && h("span", { className: "bm-chip" }, tx("archived")), h("span", { className: "bm-chip" }, r.state)),
-              r.displayName && h("span", { className: "bm-muted" }, r.displayName),
-              h("span", { className: "bm-muted" }, r.cwd)
+            { className: "bm-list", role: "tree", "aria-label": tx("title") },
+            !data ? tx("loading") : !matching.length ? tx("empty") : visibleForest.roots.map((rootId) => h(
+              "section",
+              { key: rootId, className: "bm-tree-group", "data-tree-root": rootId },
+              h("div", { className: "bm-group-head" }, h("span", { className: "bm-muted" }, forest.byId.get(rootId)?.cwd), h("span", { className: "bm-chip" }, tx("root"))),
+              ...visible.filter((r) => forest.rootOf.get(r.id) === rootId).map((r) => {
+                const depth = forest.depth.get(r.id) ?? 0, children = forest.children.get(r.id)?.length > 0;
+                return h(
+                  "div",
+                  { key: r.id, className: "bm-tree-item", style: { "--bm-depth": Math.min(depth, 8) }, "data-depth": depth },
+                  children ? h("button", { className: "bm-toggle", "aria-label": `${tx(collapsed.has(r.id) ? "expand" : "collapse")} ${r.label}`, "aria-expanded": !collapsed.has(r.id), onClick: () => toggle(r.id) }, collapsed.has(r.id) ? "\u25B8" : "\u25BE") : h("span", { className: "bm-leaf", "aria-hidden": true }, depth ? "\u2514" : "\u25CF"),
+                  h(
+                    "button",
+                    { className: `bm-row${depth ? "" : " bm-root-row"}`, role: "treeitem", "aria-level": depth + 1, ...children ? { "aria-expanded": !collapsed.has(r.id) } : {}, "aria-selected": selected === r.id, onClick: () => setSelected(r.id) },
+                    h("span", { className: "bm-line" }, h("strong", { className: "bm-label" }, r.label), r.id === current && h("span", { className: "bm-chip" }, tx("current")), r.archived && h("span", { className: "bm-chip" }, tx("archived"))),
+                    h("span", { className: "bm-muted" }, `${depth ? tx("branch") : tx("root")} \xB7 ${r.displayName ? r.displayName + " \xB7 " : ""}${tx(r.state)}`),
+                    h("span", { className: "bm-muted" }, r.cwd)
+                  )
+                );
+              })
             )),
             matching.length > limit && h("button", { onClick: () => setLimit(limit + 80) }, tx("more"))
           ),
-          h("aside", { className: "bm-detail", "aria-label": tx("details") }, row ? h(
+          (mode === "list" || showDetails) && h("aside", { className: "bm-detail", "aria-label": tx("details") }, row ? h(
             React.Fragment,
             null,
             h("h3", null, row.label),
             row.displayName && h("strong", null, row.displayName),
             h("div", { className: "bm-muted" }, row.cwd),
             h("div", null, row.brief),
-            h("div", { className: "bm-muted" }, row.state),
+            h("div", { className: "bm-detail-path" }, h("span", { className: "bm-muted" }, tx("location")), h("button", { onClick: () => {
+              setSelected(rootRow.id);
+              setRoot(rootRow.id);
+            } }, rootRow?.label), parentRow && h(React.Fragment, null, h("span", { className: "bm-muted" }, tx("parent")), h("button", { onClick: () => setSelected(parentRow.id) }, parentRow.label)), !parentRow && row.parentSessionId && h("span", { className: "bm-muted" }, tx("missingParent"))),
+            h("div", { className: "bm-muted" }, tx(row.state)),
             row.presence === "missing" && h("div", { role: "status" }, tx("missing")),
             row.presence === "unknown" && h("div", { role: "status" }, tx("unknown")),
             h("button", { disabled: !row.sessionId || row.archived || row.presence === "missing", onClick: async () => {
@@ -760,7 +948,7 @@
         register("sidebar.footer.action", "branchman-global-v2", () => h(Action, { kind: "overview" }));
         register("shell.overlay", "branchman-overlay-v2", Overlay);
       },
-      __test: { overviewRows, layoutRows }
+      __test: { overviewRows, layoutRows, buildForest, selectForestRows }
     };
   }
   window.__ModuleLoader__.load({ id: "dsh-branchman", factory: (require2) => createClient(require2("react")) });

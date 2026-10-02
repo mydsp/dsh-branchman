@@ -1,10 +1,11 @@
 import { pan, zoomAt, fit, type Camera, type DragStart } from './camera.js';
-import { buildGraph } from '../domain/graph.js';
+import { buildForest, layoutRows, selectForestRows } from './forest.js';
 import { selectLabel, isBoilerplateTitle } from './session-store.js';
 
 declare const window: any, document: any, ResizeObserver: any;
 type Row = { id: string; sessionId: string | null; directionId: string | null; parentSessionId: string | null; repoId: string | null;
-  label: string; cwd: string | null; archived: boolean; presence: string; state: string; brief: string; displayName: string };
+  label: string; cwd: string | null; archived: boolean; presence: string; state: string; brief: string; displayName: string; createdAt?: number | null };
+const shortText = (text: string, budget = 34) => { let out = '', width = 0; for (const ch of text) { width += ch.charCodeAt(0) > 127 ? 2 : 1; if (width > budget) return out + '…'; out += ch; } return out; };
 export function overviewRows(data: any, catalogue: any = {}): Row[] {
   const directions = new Map(data.directions.map((d: any) => [d.id, d]));
   const rows: Row[] = data.sessions.map((s: any) => {
@@ -12,28 +13,12 @@ export function overviewRows(data: any, catalogue: any = {}): Row[] {
     const authoritativeTitle = typeof host?.title === 'string' && (!isBoilerplateTitle(host.title) || s.label?.source === 'user') ? host.title : null;
     const label = selectLabel({ userTitle: authoritativeTitle ?? (s.label?.source === 'user' ? s.label.text : null), hostTitle: s.label?.source === 'host' ? s.label.text : null, brief: d?.brief,
       summary: s.label?.source === 'summary' ? s.label.text : null, sessionId: s.sessionId });
-    return { id: s.sessionId, sessionId: s.sessionId, directionId: d?.id ?? null, parentSessionId: s.parentSessionId, repoId: s.repoId,
+    return { id: s.sessionId, sessionId: s.sessionId, directionId: d?.id ?? null, parentSessionId: s.parentSessionId, repoId: s.repoId ?? d?.repoId ?? null, createdAt: s.createdAt,
       label: label?.text ?? s.sessionId, cwd: s.cwd, archived: s.archived, presence: s.presence, state: d?.state ?? 'session', brief: d?.brief ?? '', displayName: d?.displayName ?? '' };
   });
   for (const d of data.directions) if (!rows.some(r => r.directionId === d.id)) rows.push({ id: `direction:${d.id}`, sessionId: d.primarySessionId, directionId: d.id, parentSessionId: null, repoId: d.repoId,
     label: d.displayName, displayName: d.displayName, cwd: data.worktrees.find((w: any) => w.id === d.worktreeId)?.canonicalPath ?? null, archived: false, presence: 'unknown', state: d.state, brief: d.brief ?? '' });
   return rows;
-}
-export function layoutRows(rows: Row[]) {
-  const ids = new Set(rows.map(r => r.id));
-  const graph = buildGraph(rows.map(r => ({ id: r.id, kind: r.directionId ? 'direction' as const : 'session' as const })),
-    rows.filter(r => r.parentSessionId && ids.has(r.parentSessionId)).map(r => ({ id: `edge:${r.id}`, sourceId: r.parentSessionId!, targetId: r.id })));
-  const cyclic = new Set(graph.issues.filter(i => i.code === 'cycle').flatMap(i => i.ids)), byId = new Map(rows.map(r => [r.id, r]));
-  const depths = new Map<string, number>();
-  for (const row of rows) {
-    let current = row, depth = 0, seen = new Set<string>();
-    while (current.parentSessionId && byId.has(current.parentSessionId) && !cyclic.has(current.id) && !seen.has(current.id)) {
-      seen.add(current.id); depth++; current = byId.get(current.parentSessionId)!;
-    }
-    depths.set(row.id, Math.min(depth, 12));
-  }
-  const positions = new Map(rows.map((r, i) => [r.id, { x: (depths.get(r.id) ?? 0) * 300 + 18, y: i * 90 + 18 }]));
-  return { positions, graph, width: Math.max(320, ...[...positions.values()].map(p => p.x + 278)), height: Math.max(120, rows.length * 90 + 18) };
 }
 const zh: Record<string, string> = {
   title: '走向总览', fork: '创建走向', close: '关闭', list: '列表', graph: '关系图', search: '搜索会话、走向、路径', refresh: '刷新', open: '打开会话', fit: '适应画布', more: '显示更多',
@@ -42,6 +27,8 @@ const zh: Record<string, string> = {
   empty: '没有匹配项', archived: '已归档', current: '当前会话', all: '所有仓库', details: '详情', noSelection: '选择会话查看详情', loading: '加载中…', failed: '加载失败', retry: '重试',
   missing: '会话确实缺失', unknown: '会话状态未确认', pending: '需要恢复', saved: '已创建；会话打开失败，可从总览重新打开', conflict: '存在冲突，请在工作树中处理后重新检查',
   manual: '此操作需要检查工作树及日志后处理', check: '检查工作树', zoomIn: '放大', zoomOut: '缩小', show: '已显示', total: '总计', revision: '版本', confirmation: '确认执行',
+  roots: '全部主树', root: '主树', branch: '分支', conversations: '会话', collapse: '收起分支', expand: '展开分支', expandAll: '展开全部', collapseAll: '收起全部', parent: '父会话', location: '所属主树', focus: '定位选中', graphHelp: '主树独立分区 · 拖动画布查看 · 可筛选单棵主树',
+  session: '普通会话', ready: '可用', removed: '已移除', creatingState: '正在创建', 'recovery-required': '需要恢复', conflicted: '存在冲突', missingParent: '原父会话已删除或不可用',
 };
 const en: Record<string, string> = {
   title: 'Directions', fork: 'New direction', close: 'Close', list: 'List', graph: 'Graph', search: 'Search conversations, directions or paths', refresh: 'Refresh', open: 'Open conversation', fit: 'Fit canvas', more: 'Show more',
@@ -50,8 +37,12 @@ const en: Record<string, string> = {
   empty: 'No matches', archived: 'Archived', current: 'Current conversation', all: 'All repositories', details: 'Details', noSelection: 'Select a conversation', loading: 'Loading…', failed: 'Failed to load', retry: 'Retry',
   missing: 'Conversation missing', unknown: 'Presence unknown', pending: 'Recovery required', saved: 'Created; opening failed. Open it from Directions.', conflict: 'Resolve worktree conflicts before checking again', manual: 'Inspect the worktree and operation journal',
   check: 'Check worktrees', zoomIn: 'Zoom in', zoomOut: 'Zoom out', show: 'Showing', total: 'Total', revision: 'Revision', confirmation: 'Confirm action',
+  roots: 'All main trees', root: 'Main tree', branch: 'Branch', conversations: 'conversations', collapse: 'Collapse branches', expand: 'Expand branches', expandAll: 'Expand all', collapseAll: 'Collapse all', parent: 'Parent conversation', location: 'Main tree', focus: 'Focus selected', graphHelp: 'Separate main trees · Drag to pan · Select one main tree to focus',
+  session: 'Conversation', ready: 'Ready', removed: 'Removed', creatingState: 'Creating', 'recovery-required': 'Recovery required', conflicted: 'Conflicted', missingParent: 'Original parent deleted or unavailable',
 };
 const CSS = `
+.bm-toolbar select{width:185px;max-width:100%;min-width:0}.bm-toolbar input{min-width:180px}.bm-graph-help{position:absolute;top:8px;left:10px;right:10px;pointer-events:none;font-size:12px;opacity:.65;background:var(--dsw-alias-bg-module-platform,#f5f6f7);padding:4px 7px;border-radius:5px}
+.bm-tree-group{border:1px solid var(--dsw-alias-border-l3,#8885);border-radius:10px;margin-bottom:14px;padding:8px;background:var(--dsw-alias-bg-layer-1,#fff)}.bm-group-head{padding:3px 6px 8px;display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #8883;margin-bottom:7px}.bm-tree-item{display:flex;align-items:stretch;gap:5px;position:relative;margin-left:calc(var(--bm-depth,0)*22px)}.bm-tree-item[data-depth]:not([data-depth="0"]){border-left:2px solid #4285cf44;padding-left:6px}.bm-tree-item .bm-row{min-width:0;flex:1}.bm-tree-item .bm-toggle{width:25px;padding:0;flex:none;border:0;background:transparent;align-self:flex-start;height:35px}.bm-tree-item .bm-leaf{width:25px;flex:none;text-align:center;padding-top:8px;color:#4285cf}.bm-root-row .bm-label{font-size:14px}.bm-root-row{border-left:3px solid #4285cf!important}.bm-detail-path{padding:9px;border-radius:8px;background:#8080800b;border:1px solid #8883;display:flex;flex-direction:column;gap:5px}.bm-detail-path button{text-align:left;font-size:12px}.bm-canvas .bm-tree-card{fill:var(--dsw-alias-bg-module-platform,#80808007);stroke:#4285cf55;stroke-width:1}.bm-canvas .bm-edge{stroke:#4285cf88;stroke-width:1.6}.bm-canvas .bm-tree-caption{font-weight:600}.bm-canvas .bm-node-kind{fill:#4285cf}.bm-canvas .bm-graph-toggle{fill:#4285cf;cursor:pointer}
 .bm-backdrop{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.32);display:grid;place-items:center;padding:18px;box-sizing:border-box}.bm-panel{box-sizing:border-box;max-width:100%}
 .bm-panel{width:min(1120px,96vw);height:min(780px,94vh);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--dsw-alias-border-l3,#8888);border-radius:14px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#202124);box-shadow:0 18px 70px #0004;font:14px/1.5 system-ui}
 .bm-head,.bm-toolbar,.bm-foot{padding:12px 18px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--dsw-alias-border-l3,#8886)}
@@ -147,12 +138,13 @@ export function createClient(React: any) {
       operation && h('div', { className: 'bm-fields' }, h('code', null, operation.operationId), h('button', { type: 'button', onClick: () => setView({ kind: 'overview', props }) }, tx('operations'))),
       h('footer', { className: 'bm-foot' }, h('button', { type: 'submit', disabled: busy || !source?.cwd || !name.trim() || !!operation }, busy ? tx('creating') : tx('create')))));
   }
-  function Graph({ rows, selected, select }: any) {
+  function Graph({ rows, selected, select, forest, collapsed, toggle }: any) {
     const layout = React.useMemo(() => layoutRows(rows), [rows]);
     const [element, setElement] = React.useState(null), [size, setSize] = React.useState({ w: 800, h: 400 }), [camera, setCamera] = React.useState({ x: 10, y: 10, k: 1 });
     const cam = React.useRef(camera), drag = React.useRef(null), initialized = React.useRef(false);
     cam.current = camera;
     const doFit = () => { setCamera(fit(layout.width, layout.height, size.w, size.h)); initialized.current = true; };
+    const focusSelected = () => { const p = layout.positions.get(selected); if (p) { setCamera({ k: 1, x: size.w / 2 - p.x - 132, y: size.h / 2 - p.y - 34 }); initialized.current = true; } };
     React.useEffect(() => {
       if (!element) return;
       const resize = () => { const rect = element.getBoundingClientRect(); setSize({ w: rect.width, h: rect.height }); };
@@ -161,7 +153,7 @@ export function createClient(React: any) {
       element.addEventListener('wheel', wheel, { passive: false });
       return () => { observer.disconnect(); element.removeEventListener('wheel', wheel); };
     }, [element]);
-    React.useEffect(() => { if (!initialized.current && rows.length && size.w > 0 && size.h > 0) doFit(); }, [rows.length, size.w, size.h]);
+    React.useEffect(() => { if (!initialized.current && rows.length && size.w > 0 && size.h > 0) { const fitted = fit(layout.width, layout.height, size.w, size.h); setCamera(fitted.k >= .72 ? fitted : { k: .72, x: 12, y: 38 }); initialized.current = true; } }, [rows.length, size.w, size.h]);
     const down = (e: any) => {
       if (e.button !== 0 || e.target.closest('[role="button"]')) return;
       element.setPointerCapture(e.pointerId); drag.current = { pointerStartX: e.clientX, pointerStartY: e.clientY, cameraStartX: cam.current.x, cameraStartY: cam.current.y, k: cam.current.k } satisfies DragStart;
@@ -175,16 +167,20 @@ export function createClient(React: any) {
     return h('div', { className: 'bm-canvas', ref: setElement, tabIndex: 0, 'aria-label': tx('graph'), onKeyDown: key, onPointerDown: down,
       onPointerMove: (e: any) => { if (drag.current) setCamera(pan(drag.current, e.clientX, e.clientY)); }, onPointerUp: () => { drag.current = null; }, onLostPointerCapture: () => { drag.current = null; } },
       h('svg', { viewBox: `0 0 ${size.w} ${size.h}`, 'data-camera': JSON.stringify(camera) }, h('g', { transform: `translate(${camera.x} ${camera.y}) scale(${camera.k})` },
-        layout.graph.edges.map((edge: any) => { const a = layout.positions.get(edge.sourceId)!, b = layout.positions.get(edge.targetId)!; return h('path', { key: edge.id, d: `M${a.x + 264} ${a.y + 32} C${a.x + 290} ${a.y + 32},${b.x - 24} ${b.y + 32},${b.x} ${b.y + 32}` }); }),
-        rows.map((row: Row) => { const p = layout.positions.get(row.id)!; return h('g', { key: row.id, role: 'button', tabIndex: 0, 'aria-label': row.label, 'aria-selected': row.id === selected, transform: `translate(${p.x} ${p.y})`, onClick: () => select(row.id), onKeyDown: (e: any) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); select(row.id); } } },
-          h('rect', { width: 264, height: 68, rx: 9 }), h('text', { x: 12, y: 25, fontSize: 13 }, row.label.slice(0, 28)), h('text', { x: 12, y: 48, fontSize: 11, opacity: 0.7 }, `${row.displayName || row.state}${row.archived ? ` · ${tx('archived')}` : ''}`)); }))),
-      h('div', { style: { position: 'absolute', bottom: 10, left: 10, display: 'flex', gap: 6 } },
+        layout.groups.map((group: any) => h('g', { key: `group:${group.rootId}`, 'data-tree-root': group.rootId }, h('rect', { className: 'bm-tree-card', x: group.x, y: group.y, width: group.width, height: group.height, rx: 12 }), h('text', { className: 'bm-tree-caption', x: group.x + 16, y: group.y + 25, fontSize: 12 }, `${tx('root')} · ${shortText(layout.byId.get(group.rootId)?.label ?? '', 30)} · ${group.ids.length}`))),
+        layout.graph.edges.map((edge: any) => { const a = layout.positions.get(edge.sourceId)!, b = layout.positions.get(edge.targetId)!; return h('path', { key: edge.id, className: 'bm-edge', 'data-tree-root': layout.rootOf.get(edge.sourceId), d: `M${a.x + 264} ${a.y + 34} C${a.x + 288} ${a.y + 34},${b.x - 24} ${b.y + 34},${b.x} ${b.y + 34}` }); }),
+        rows.map((row: Row) => { const p = layout.positions.get(row.id)!, hasChildren = forest.children.get(row.id)?.length > 0; return h('g', { key: row.id, role: 'button', tabIndex: 0, 'aria-label': row.label, 'aria-selected': row.id === selected, 'data-session-id': row.id, transform: `translate(${p.x} ${p.y})`, onClick: () => select(row.id), onKeyDown: (e: any) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); select(row.id); } } },
+          h('title', null, `${row.label}\n${row.cwd ?? ''}`), h('rect', { width: 264, height: 68, rx: 9 }), h('text', { x: 12, y: 24, fontSize: 13 }, shortText(row.label)), h('text', { x: 12, y: 49, fontSize: 11, opacity: 0.7 }, shortText(`${forest.depth.get(row.id) ? tx('branch') : tx('root')} · ${row.displayName || tx(row.state)}${row.archived ? ` · ${tx('archived')}` : ''}`)),
+          hasChildren && h('g', { role: 'button', tabIndex: 0, className: 'bm-graph-toggle', 'aria-label': `${tx(collapsed.has(row.id) ? 'expand' : 'collapse')} ${row.label}`, 'aria-expanded': !collapsed.has(row.id), onClick: (e: any) => { e.stopPropagation(); toggle(row.id); }, onKeyDown: (e: any) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggle(row.id); } } }, h('rect', { x: 237, y: 37, width: 22, height: 24, rx: 4 }), h('text', { x: 243, y: 53, fontSize: 14 }, collapsed.has(row.id) ? '+' : '−'))); }))),
+      h('div', { className: 'bm-graph-help' }, tx('graphHelp')), h('div', { style: { position: 'absolute', bottom: 10, left: 10, display: 'flex', gap: 6 } },
         h('button', { onClick: () => setCamera(zoomAt(cam.current, 1.2, size.w / 2, size.h / 2)), 'aria-label': tx('zoomIn') }, '+'),
-        h('button', { onClick: () => setCamera(zoomAt(cam.current, 1 / 1.2, size.w / 2, size.h / 2)), 'aria-label': tx('zoomOut') }, '−'), h('button', { onClick: doFit }, tx('fit'))));
+        h('button', { onClick: () => setCamera(zoomAt(cam.current, 1 / 1.2, size.w / 2, size.h / 2)), 'aria-label': tx('zoomOut') }, '−'), h('button', { onClick: doFit }, tx('fit')), h('button', { onClick: focusSelected, disabled: !layout.positions.has(selected) }, tx('focus'))));
   }
   function Overview({ props }: any) {
     const catalogue = useCatalogue(), current = props?.sessionId ?? catalogue.current;
     const [data, setData] = React.useState(null), [error, setError] = React.useState(''), [mode, setMode] = React.useState('list'), [search, setSearch] = React.useState(''), [repo, setRepo] = React.useState(''), [limit, setLimit] = React.useState(80), [selected, setSelected] = React.useState(current), [busy, setBusy] = React.useState(false), [confirm, setConfirm] = React.useState(null);
+    const [root, setRoot] = React.useState(''), [collapsed, setCollapsed] = React.useState(new Set<string>()), [showDetails, setShowDetails] = React.useState(false);
+    const toggle = (id: string) => setCollapsed((before: Set<string>) => { const next = new Set(before); next.has(id) ? next.delete(id) : next.add(id); return next; });
     const alive = React.useRef(true), controller = React.useRef(null), revision = React.useRef(-1), flight = React.useRef(null);
     const load = () => {
       if (flight.current) return flight.current;
@@ -196,10 +192,10 @@ export function createClient(React: any) {
     };
     React.useEffect(() => { alive.current = true; void load(); const timer = setInterval(() => { if (!document.hidden) void load(); }, 5000); return () => { alive.current = false; clearInterval(timer); controller.current?.abort(); }; }, [current]);
     const rows = React.useMemo(() => data ? overviewRows(data, catalogue) : [], [data, catalogue]);
-    const matching = rows.filter((r: Row) => (!repo || r.repoId === repo) && `${r.label} ${r.displayName} ${r.cwd} ${r.brief}`.toLowerCase().includes(search.toLowerCase()));
-    // Current conversation remains near the top; every match is accessible via pagination.
-    const ordered = [...matching].sort((a: Row, b: Row) => Number(b.id === current) - Number(a.id === current));
-    const visible = ordered.slice(0, limit), row = rows.find((r: Row) => r.id === selected);
+    const forest = React.useMemo(() => buildForest<Row>(rows), [rows]);
+    const matching = forest.ordered.filter((r: Row) => (!repo || r.repoId === repo || forest.byId.get(forest.rootOf.get(r.id))?.repoId === repo) && (!root || forest.rootOf.get(r.id) === root) && `${r.label} ${r.displayName} ${r.cwd} ${r.brief}`.toLowerCase().includes(search.toLowerCase()));
+    const visible = selectForestRows<Row>(forest, matching, limit, collapsed, !!search), row = rows.find((r: Row) => r.id === selected);
+    const visibleForest = buildForest(visible), rootRow = row && forest.byId.get(forest.rootOf.get(row.id)), parentRow = row && forest.byId.get(forest.parent.get(row.id));
     const doAction = async (kind: string, id: string) => {
       setBusy(true); setError('');
       try { const result = await api(kind, kind === 'recover' ? { operationId: id } : { directionId: id, requestId: window.crypto.randomUUID() });
@@ -209,16 +205,23 @@ export function createClient(React: any) {
     const button = (kind: string, label = kind) => h('button', { disabled: busy, onClick: () => setConfirm({ kind, id: row.directionId }) }, tx(label));
     return h(Dialog, { title: tx('title') },
       h('div', { className: 'bm-toolbar' }, h('input', { placeholder: tx('search'), 'aria-label': tx('search'), value: search, onChange: (e: any) => { setSearch(e.target.value); setLimit(80); } }),
-        h('select', { value: repo, 'aria-label': tx('all'), onChange: (e: any) => { setRepo(e.target.value); setLimit(80); } }, h('option', { value: '' }, tx('all')), ...(data?.repositories ?? []).map((r: any) => h('option', { value: r.id, key: r.id }, data.worktrees.find((w: any) => w.id === r.primaryWorktreeId)?.canonicalPath))),
-        ...['list', 'graph'].map(kind => h('button', { key: kind, 'aria-pressed': mode === kind, onClick: () => setMode(kind) }, tx(kind)))),
+        h('select', { value: repo, 'aria-label': tx('all'), onChange: (e: any) => { setRepo(e.target.value); setRoot(''); setLimit(80); } }, h('option', { value: '' }, tx('all')), ...(data?.repositories ?? []).map((r: any) => h('option', { value: r.id, key: r.id }, data.worktrees.find((w: any) => w.id === r.primaryWorktreeId)?.canonicalPath))),
+        h('select', { value: root, 'aria-label': tx('roots'), onChange: (e: any) => { setRoot(e.target.value); setLimit(80); } }, h('option', { value: '' }, tx('roots')), ...forest.roots.filter((id: string) => !repo || forest.byId.get(id)?.repoId === repo).map((id: string) => h('option', { key: id, value: id }, forest.byId.get(id)?.label))),
+        ...['list', 'graph'].map(kind => h('button', { key: kind, 'aria-pressed': mode === kind, onClick: () => setMode(kind) }, tx(kind))),
+        h('button', { onClick: () => setCollapsed(new Set(forest.ordered.filter((r: Row) => forest.children.get(r.id).length).map((r: Row) => r.id))) }, tx('collapseAll')), h('button', { onClick: () => setCollapsed(new Set()) }, tx('expandAll')), mode === 'graph' && h('button', { 'aria-pressed': showDetails, onClick: () => setShowDetails(!showDetails) }, tx('details'))),
       error && h('div', { className: 'bm-error', role: 'alert' }, error),
-      h('div', { className: 'bm-body' }, mode === 'graph' ? h(Graph, { rows: visible, selected, select: setSelected }) : h('div', { className: 'bm-list', role: 'listbox', 'aria-label': tx('title') },
-        !data ? tx('loading') : !matching.length ? tx('empty') : visible.map((r: Row) => h('button', { key: r.id, className: 'bm-row', role: 'option', 'aria-selected': selected === r.id, onClick: () => setSelected(r.id) },
-          h('span', { className: 'bm-line' }, h('strong', { className: 'bm-label' }, r.label), r.id === current && h('span', { className: 'bm-chip' }, tx('current')), r.archived && h('span', { className: 'bm-chip' }, tx('archived')), h('span', { className: 'bm-chip' }, r.state)),
-          r.displayName && h('span', { className: 'bm-muted' }, r.displayName), h('span', { className: 'bm-muted' }, r.cwd))),
+      h('div', { className: 'bm-body' }, mode === 'graph' ? h(Graph, { key: root || 'all', rows: visible, selected, select: setSelected, forest, collapsed, toggle }) : h('div', { className: 'bm-list', role: 'tree', 'aria-label': tx('title') },
+        !data ? tx('loading') : !matching.length ? tx('empty') : visibleForest.roots.map((rootId: string) => h('section', { key: rootId, className: 'bm-tree-group', 'data-tree-root': rootId },
+          h('div', { className: 'bm-group-head' }, h('span', { className: 'bm-muted' }, forest.byId.get(rootId)?.cwd), h('span', { className: 'bm-chip' }, tx('root'))),
+          ...visible.filter((r: Row) => forest.rootOf.get(r.id) === rootId).map((r: Row) => { const depth = forest.depth.get(r.id) ?? 0, children = forest.children.get(r.id)?.length > 0; return h('div', { key: r.id, className: 'bm-tree-item', style: { '--bm-depth': Math.min(depth, 8) }, 'data-depth': depth },
+            children ? h('button', { className: 'bm-toggle', 'aria-label': `${tx(collapsed.has(r.id) ? 'expand' : 'collapse')} ${r.label}`, 'aria-expanded': !collapsed.has(r.id), onClick: () => toggle(r.id) }, collapsed.has(r.id) ? '▸' : '▾') : h('span', { className: 'bm-leaf', 'aria-hidden': true }, depth ? '└' : '●'),
+            h('button', { className: `bm-row${depth ? '' : ' bm-root-row'}`, role: 'treeitem', 'aria-level': depth + 1, ...(children ? { 'aria-expanded': !collapsed.has(r.id) } : {}), 'aria-selected': selected === r.id, onClick: () => setSelected(r.id) },
+              h('span', { className: 'bm-line' }, h('strong', { className: 'bm-label' }, r.label), r.id === current && h('span', { className: 'bm-chip' }, tx('current')), r.archived && h('span', { className: 'bm-chip' }, tx('archived'))),
+              h('span', { className: 'bm-muted' }, `${depth ? tx('branch') : tx('root')} · ${r.displayName ? r.displayName + ' · ' : ''}${tx(r.state)}`), h('span', { className: 'bm-muted' }, r.cwd))); }))),
         matching.length > limit && h('button', { onClick: () => setLimit(limit + 80) }, tx('more'))),
-      h('aside', { className: 'bm-detail', 'aria-label': tx('details') }, row ? h(React.Fragment, null, h('h3', null, row.label), row.displayName && h('strong', null, row.displayName), h('div', { className: 'bm-muted' }, row.cwd), h('div', null, row.brief),
-        h('div', { className: 'bm-muted' }, row.state), row.presence === 'missing' && h('div', { role: 'status' }, tx('missing')), row.presence === 'unknown' && h('div', { role: 'status' }, tx('unknown')),
+      (mode === 'list' || showDetails) && h('aside', { className: 'bm-detail', 'aria-label': tx('details') }, row ? h(React.Fragment, null, h('h3', null, row.label), row.displayName && h('strong', null, row.displayName), h('div', { className: 'bm-muted' }, row.cwd), h('div', null, row.brief),
+        h('div', { className: 'bm-detail-path' }, h('span', { className: 'bm-muted' }, tx('location')), h('button', { onClick: () => { setSelected(rootRow.id); setRoot(rootRow.id); } }, rootRow?.label), parentRow && h(React.Fragment, null, h('span', { className: 'bm-muted' }, tx('parent')), h('button', { onClick: () => setSelected(parentRow.id) }, parentRow.label)), !parentRow && row.parentSessionId && h('span', { className: 'bm-muted' }, tx('missingParent'))),
+        h('div', { className: 'bm-muted' }, tx(row.state)), row.presence === 'missing' && h('div', { role: 'status' }, tx('missing')), row.presence === 'unknown' && h('div', { role: 'status' }, tx('unknown')),
         h('button', { disabled: !row.sessionId || row.archived || row.presence === 'missing', onClick: async () => { try { await open(row.sessionId); setView(null); } catch (e) { setError((e as Error).message); } } }, tx('open')),
         h('button', { disabled: !row.sessionId || !row.cwd || row.state === 'removed', onClick: () => setView({ kind: 'fork', props: { sessionId: row.sessionId } }) }, tx('fork')),
         row.archived && row.directionId && h('button', { disabled: busy, onClick: () => void doAction('unarchive', row.directionId) }, tx('unarchive')),
@@ -254,7 +257,7 @@ export function createClient(React: any) {
       register('sidebar.footer.action', 'branchman-global-v2', () => h(Action, { kind: 'overview' }));
       register('shell.overlay', 'branchman-overlay-v2', Overlay);
     },
-    __test: { overviewRows, layoutRows },
+    __test: { overviewRows, layoutRows, buildForest, selectForestRows },
   };
 }
 
