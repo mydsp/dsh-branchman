@@ -40,12 +40,20 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+          cache: npm
 
-      # 发布前必须全绿（140 项断言，零依赖）
+      - name: Install locked build dependencies
+        run: npm ci
+
+      # 发布前编译、构建并执行完整测试。
       - run: npm test
 
       - name: 核对将要发布的文件
-        run: npm pack --dry-run
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          git diff --exit-code -- index.js client.js
 
       - name: 发布（OIDC，无需令牌）
-        run: npm publish --provenance --access public ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npm publish "$RUNNER_TEMP/dsh-branchman-$version.tgz" --ignore-scripts --provenance --access public ${{ inputs.dry-run && '--dry-run' || '' }}
