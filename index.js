@@ -474,6 +474,7 @@ function migrateV1(raw) {
 
 // src/host/git-adapter.ts
 import { execFile } from "node:child_process";
+import { realpath } from "node:fs/promises";
 var GitError = class extends Error {
   kind;
   code;
@@ -543,8 +544,8 @@ var GitAdapter = class {
     const headOid = await this.#text(["rev-parse", "HEAD"]);
     const branchRef = await this.#optionalText(["symbolic-ref", "--quiet", "--short", "HEAD"]);
     return {
-      commonDir: normalizePath(commonDir),
-      worktreePath: normalizePath(worktreePath),
+      commonDir: normalizePath(await realpath(commonDir)),
+      worktreePath: normalizePath(await realpath(worktreePath)),
       headOid,
       branchRef
     };
@@ -966,7 +967,7 @@ var OperationsEngine = class {
 };
 
 // src/host/changes.ts
-import { mkdir as mkdir3, readFile as readFile3, writeFile, copyFile, lstat, realpath, stat, rm as rm3 } from "node:fs/promises";
+import { mkdir as mkdir3, readFile as readFile3, writeFile, copyFile, lstat, realpath as realpath2, stat, rm as rm3 } from "node:fs/promises";
 import { join as join2, dirname as dirname2, resolve, relative, isAbsolute } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var paths = ["--", ".", ":(exclude).branches"];
@@ -994,14 +995,14 @@ var ChangeSnapshots = class {
     const files = [];
     for (const name of names) {
       if (isAbsolute(name) || name.split(/[\\/]/).includes("..")) throw new Error("unsafe untracked path");
-      const source = resolve(root, name), canonicalRoot = await realpath(root);
+      const source = resolve(root, name), canonicalRoot = await realpath2(root);
       try {
         await lstat(source);
       } catch (e) {
         if (e.code === "ENOENT" && tracked.includes(name)) continue;
         throw e;
       }
-      const canonicalSource = await realpath(source);
+      const canonicalSource = await realpath2(source);
       const rel = relative(canonicalRoot, canonicalSource);
       if (rel.startsWith("..") || isAbsolute(rel) || !(await lstat(source)).isFile()) throw new Error(`unsupported external/symlink file: ${name}`);
       let ancestor = source;

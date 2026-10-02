@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -10,7 +10,7 @@ import { samePath } from '../../src/domain/paths.js';
 const GIT = 'git';
 
 async function freshRepo() {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-git-adapter-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-git-adapter-')));
   const git = (args: string[]) => execFileSync(GIT, args, { cwd: root, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git(['init', '-b', 'main']);
   git(['config', 'user.email', 'adapter@local.invalid']);

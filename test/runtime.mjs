@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { BranchmanRuntime } from '../index.js';
 const exec = promisify(execFile), git = (cwd, ...args) => exec(process.env.GIT_PATH ?? 'git', args, { cwd, windowsHide: true });
 async function fixture() {
-  const dir = await mkdtemp(join(tmpdir(), 'branchman-Runtime-')), repo = join(dir, 'repo');
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'branchman-Runtime-'))), repo = join(dir, 'repo');
   await mkdir(repo); await git(repo, 'init', '-b', 'feature-source'); await git(repo, 'config', 'user.name', 'Acceptance'); await git(repo, 'config', 'user.email', 'lab@example.invalid');
   await writeFile(join(repo, '中文.txt'), 'baseline\n'); await writeFile(join(repo, 'binary.dat'), Buffer.from([0,1,2,3]));
   await git(repo,'add','.'); await git(repo,'commit','-m','baseline');
